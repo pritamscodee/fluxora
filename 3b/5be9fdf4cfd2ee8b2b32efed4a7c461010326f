@@ -1,0 +1,304 @@
+frontend/src/content/docs/playback.mdx
+  s_49407d0fa190d6::t_059cdb0b0ee726 1-194
+frontend/src/content/docs/transcoding.mdx
+  s_49407d0fa190d6::t_c23625e5d8dc88 1-209
+backend/app/api/v1/auth.py
+  s_49407d0fa190d6::t_1d4a9381b7ed1a 94-96
+  s_49407d0fa190d6::t_55774b94768248 1-93,97-119
+backend/app/api/v1/uploads.py
+  s_49407d0fa190d6::t_53bc92715b037e 1-51
+docker-compose.yml
+  s_49407d0fa190d6::t_1ac8c234898f07 69-90,94
+  s_49407d0fa190d6::t_76fe438104031a 35-41
+  s_49407d0fa190d6::t_d01a98b3a092d6 3-12,14-34,42-47,49-50,54-55,65,92
+  s_49407d0fa190d6::t_239ac9273ecb57 1-2,13,48,51-53,56-64,66-68,91,93
+frontend/src/components/ui/collapsible.tsx
+  s_49407d0fa190d6::t_19ca65025b82bb 1-21
+backend/migrations/versions/08dbeffc61dc_initial_schema.py
+  s_49407d0fa190d6::t_57f9dfc97a342f 1-856
+docs/FEATURE_MATRIX.md
+  s_49407d0fa190d6::t_0558136875a286 1-77
+backend/app/workers/agent_worker.py
+  s_49407d0fa190d6::t_b7fc10023e9e68 1-161
+backend/app/agents/graph.py
+  s_49407d0fa190d6::t_6c2de74b4b0bc0 1-320,330,332-333,335-411
+  s_49407d0fa190d6::t_00431e952da92c 321-329,331,334
+backend/app/core/telemetry.py
+  s_49407d0fa190d6::t_dfb5643d817854 1-56
+backend/app/models/account.py
+  s_49407d0fa190d6::t_45453a0dec2cf4 1-92
+backend/tests/test_pipeline.py
+  s_49407d0fa190d6::t_f6b8116f366634 1-202
+frontend/src/content/docs/deployment.mdx
+  s_49407d0fa190d6::t_6452f1f2218457 1-177
+backend/app/models/__init__.py
+  s_49407d0fa190d6::t_b11e1bd6a480dd 1-70
+frontend/src/components/docs/Callout.astro
+  s_49407d0fa190d6::t_67ee4a4afa6b2b 1-50
+frontend/src/content/docs/guardrails.mdx
+  s_49407d0fa190d6::t_378540b9be4fef 1-174
+frontend/src/components/ui/tooltip.tsx
+  s_49407d0fa190d6::t_19ca65025b82bb 1-63
+frontend/src/content/docs/agent-overview.mdx
+  s_49407d0fa190d6::t_8247c851c91cf0 1-215
+backend/migrations/env.py
+  s_49407d0fa190d6::t_f18e9390dc191d 1-65
+frontend/src/components/docs/Endpoint.astro
+  s_49407d0fa190d6::t_67ee4a4afa6b2b 1-39
+backend/app/main.py
+  s_49407d0fa190d6::t_5a5df5027ce27d 1-50,52-75,80-116
+  s_49407d0fa190d6::t_ae2637dba06e00 51
+  s_49407d0fa190d6::t_12018197805f14 76-79
+frontend/src/content/docs/quickstart.mdx
+  s_49407d0fa190d6::t_549e629afee21c 1-257
+frontend/public/favicon.svg
+  s_49407d0fa190d6::t_2863be92ec27d0 1-5
+backend/app/agents/llm.py
+  s_49407d0fa190d6::t_62439e244a6e7a 1-100
+frontend/src/content/docs/architecture.mdx
+  s_49407d0fa190d6::t_72f5d642634874 1-224
+backend/app/core/security.py
+  s_49407d0fa190d6::t_5be22f22fe86fb 87-111,113-114,117-124,128-150,152-155,157-160,164,167
+  s_49407d0fa190d6::t_dfb5643d817854 1-86,112,115-116,125-127,151,156,161-163,165-166,168-196
+backend/app/api/v1/devstore.py
+  s_49407d0fa190d6::t_234a5d3c7faafd 1-47
+README.md
+  s_49407d0fa190d6::t_c6625ff8883d3f 1-217
+backend/app/models/video.py
+  s_49407d0fa190d6::t_f1623e31830500 1-190
+backend/app/core/db.py
+  s_49407d0fa190d6::t_1552d67de77a32 20-23,27
+  s_49407d0fa190d6::t_20bb5c32d6e7ee 1-19,24-26,28-46
+frontend/components.json
+  s_49407d0fa190d6::t_28620deb9ba0b5 1-25
+frontend/src/components/docs/Stat.astro
+  s_49407d0fa190d6::t_67ee4a4afa6b2b 1-18
+frontend/src/content/docs/reliability.mdx
+  s_49407d0fa190d6::t_2d155b436fcc05 1-183
+backend/app/api/v1/router.py
+  s_49407d0fa190d6::t_b044d984c58e78 4,22
+  s_49407d0fa190d6::t_1ff2802e435170 1-3,5-21,23-28
+frontend/src/layouts/DocsLayout.astro
+  s_49407d0fa190d6::t_345b2ca9cb2b96 1-215
+frontend/src/content/docs/feature-matrix.mdx
+  s_49407d0fa190d6::t_01ed4ee652dced 1-114
+backend/pytest.ini
+  s_49407d0fa190d6::t_4dcdda1375eb80 1-9
+backend/app/services/assets.py
+  s_49407d0fa190d6::t_cf24f48321eb6e 1-277
+backend/app/workers/handlers.py
+  s_49407d0fa190d6::t_77ea7712fd9dbe 1-606
+frontend/tsconfig.json
+  s_49407d0fa190d6::t_4180be386cd8db 1-2,5-6,12
+  s_49407d0fa190d6::t_28620deb9ba0b5 3-4,7-11,13
+backend/app/api/v1/assets.py
+  s_49407d0fa190d6::t_ad814c5599f74f 1-220
+frontend/src/styles/global.css
+  s_49407d0fa190d6::t_28620deb9ba0b5 1-4,7-9,23,28-45,61-63,98-100,125-127,176,192,328
+  s_49407d0fa190d6::t_eda184aa26b9f5 5-6,10-22,24-27,46-60,64-97,101-124,128-175,177-191,193-327,329
+backend/app/workers/ai_handlers.py
+  s_49407d0fa190d6::t_9ca53e2a71a76a 1-233
+frontend/src/pages/docs/index.astro
+  s_49407d0fa190d6::t_2863be92ec27d0 1-45
+docs/ADR-0001-architecture.md
+  s_49407d0fa190d6::t_b77f055d228d10 1-52
+frontend/src/components/ui/accordion.tsx
+  s_49407d0fa190d6::t_19ca65025b82bb 1-71
+frontend/src/content/docs/configuration.mdx
+  s_49407d0fa190d6::t_b4520970ebe30c 1-188
+backend/requirements-dev.txt
+  s_49407d0fa190d6::t_2709fb475301bd 1-4
+backend/tests/conftest.py
+  s_49407d0fa190d6::t_c8829ad9acc838 14,22-26,36-49,62-66,68-82
+  s_49407d0fa190d6::t_4dcdda1375eb80 18,85-87
+  s_49407d0fa190d6::t_5dd4e89a201a83 1-13,15-17,19-21,27-35,50-61,67,83-84,88-180
+backend/tests/test_api_surface.py
+  s_49407d0fa190d6::t_f6b8116f366634 1-444
+backend/app/workers/runner.py
+  s_49407d0fa190d6::t_884b4c1fb2f5da 1-166
+frontend/src/pages/index.astro
+  s_49407d0fa190d6::t_0e546157c8ca79 140
+  s_49407d0fa190d6::t_6f35c45d13e3bd 2-15,41-100,104-139,141-266
+  s_49407d0fa190d6::t_90f6fa5dd9d9d9 16-40
+  s_49407d0fa190d6::t_ec44b9b953162b 101-103
+  s_49407d0fa190d6::t_928257f3d99573 1
+frontend/src/content/docs/testing.mdx
+  s_49407d0fa190d6::t_87bebd089034d7 1-186
+backend/app/agents/tools.py
+  s_49407d0fa190d6::t_846d618429bcd2 1-533
+frontend/src/content/docs/contributing.mdx
+  s_49407d0fa190d6::t_4bc13e5c25ef31 1-158
+frontend/src/content/docs/observability.mdx
+  s_49407d0fa190d6::t_ea5663b09044ff 1-151
+frontend/README.md
+  s_49407d0fa190d6::t_78c84c7a2833f8 11-12,14,16,25,28,32,34,41,43,45,51,54,56
+  s_49407d0fa190d6::t_515ce1f5773ad7 1-10,13,15,17-24,26-27,29-31,33,35-40,42,44,46-50,52-53,55,57-58
+frontend/src/content/docs/task-queue.mdx
+  s_49407d0fa190d6::t_82eaf49434a7bb 1-183
+docs/API_CONTRACTS.md
+  s_49407d0fa190d6::t_f99d79b77745d7 1-178
+backend/app/core/errors.py
+  s_49407d0fa190d6::t_20bb5c32d6e7ee 1-95
+backend/app/schemas/account.py
+  s_49407d0fa190d6::t_0a9cc7cb8b39f4 1-77
+frontend/src/components/ui/separator.tsx
+  s_49407d0fa190d6::t_19ca65025b82bb 1-22
+frontend/src/components/ui/table.tsx
+  s_49407d0fa190d6::t_19ca65025b82bb 1-115
+frontend/src/lib/nav.ts
+  s_49407d0fa190d6::t_b2dbba960ad094 1-55
+backend/app/services/events.py
+  s_49407d0fa190d6::t_09b4a30b87b37f 1-149
+frontend/src/content/docs/adr-0002-object-storage.mdx
+  s_49407d0fa190d6::t_80c17b8b9e3af5 1-82
+backend/app/core/ids.py
+  s_49407d0fa190d6::t_20bb5c32d6e7ee 1-29
+.claude/launch.json
+  s_49407d0fa190d6::t_ec067a9b79ba88 1-11
+backend/app/schemas/video.py
+  s_49407d0fa190d6::t_0a9cc7cb8b39f4 1-237
+backend/migrations/script.py.mako
+  s_49407d0fa190d6::t_f18e9390dc191d 1-24
+backend/app/schemas/platform.py
+  s_49407d0fa190d6::t_0a9cc7cb8b39f4 1-195
+backend/app/services/storage.py
+  s_49407d0fa190d6::t_59feaaba161847 298-302,306-311,314-316
+  s_49407d0fa190d6::t_efc95c42729dd1 31-32,35-40,42
+  s_49407d0fa190d6::t_703486f85ea8c5 88-91,96-107,109,111-150
+  s_49407d0fa190d6::t_199e4f51a30b15 211-213,215,217,223
+  s_49407d0fa190d6::t_e2d2c8beb93a24 1-30,33-34,41,43-87,92-95,108,110,151-210,214,216,218-222,224-297,303-305,312-313,317
+frontend/src/components/ui/tabs.tsx
+  s_49407d0fa190d6::t_19ca65025b82bb 1-81
+backend/alembic.ini
+  s_49407d0fa190d6::t_2f4587e60eff0e 1-48
+backend/tests/webhook_receiver.py
+  s_49407d0fa190d6::t_e25594ad84c06b 1-74
+frontend/src/components/ui/button.tsx
+  s_49407d0fa190d6::t_28620deb9ba0b5 1-57
+frontend/src/content/docs/api-overview.mdx
+  s_49407d0fa190d6::t_23d0a1fd2ba9d6 1-216
+backend/app/models/platform.py
+  s_49407d0fa190d6::t_f510d64dfcacc6 1-187
+backend/scripts/smoke.py
+  s_49407d0fa190d6::t_5c3287222577e9 1-183
+frontend/astro.config.mjs
+  s_49407d0fa190d6::t_4180be386cd8db 1-9,11-12,22
+  s_49407d0fa190d6::t_87caaf2374dc9f 10,13-21,23-25
+frontend/src/components/Header.astro
+  s_49407d0fa190d6::t_b2dbba960ad094 1-72
+backend/app/api/deps.py
+  s_49407d0fa190d6::t_eb0592bfe2ed6e 1-175
+frontend/src/content/docs/adr-0001-architecture.mdx
+  s_49407d0fa190d6::t_80c17b8b9e3af5 1-78
+docs/ADR-0002-object-storage.md
+  s_49407d0fa190d6::t_841c15a4efe1f0 1-66
+frontend/src/components/ui/alert.tsx
+  s_49407d0fa190d6::t_19ca65025b82bb 1-75
+frontend/src/components/ui/scroll-area.tsx
+  s_49407d0fa190d6::t_19ca65025b82bb 1-52
+docker/seaweedfs-s3.json
+  s_49407d0fa190d6::t_3707eaa0b09ba4 1-14
+frontend/package.json
+  s_49407d0fa190d6::t_78c84c7a2833f8 1-14,36
+  s_49407d0fa190d6::t_4180be386cd8db 15-17,22-25,30-31,37
+  s_49407d0fa190d6::t_28620deb9ba0b5 18-19,26-28,33-35
+  s_49407d0fa190d6::t_19ca65025b82bb 29,32
+  s_49407d0fa190d6::t_118abd77a16d9f 20-21
+backend/app/schemas/common.py
+  s_49407d0fa190d6::t_0a9cc7cb8b39f4 1-47
+frontend/src/layouts/BaseLayout.astro
+  s_49407d0fa190d6::t_f8375f3dbc8a02 1-48
+backend/app/api/v1/webhooks.py
+  s_49407d0fa190d6::t_3095f9d8fb6920 1-154
+frontend/src/components/ui/card.tsx
+  s_49407d0fa190d6::t_19ca65025b82bb 1-102
+frontend/src/content/docs/agent-tools.mdx
+  s_49407d0fa190d6::t_a57466056d4237 1-186
+backend/app/api/v1/signing_keys.py
+  s_49407d0fa190d6::t_0a9cc7cb8b39f4 1-129
+frontend/src/lib/utils.ts
+  s_49407d0fa190d6::t_28620deb9ba0b5 1
+backend/app/api/v1/delivery.py
+  s_49407d0fa190d6::t_94efb6cf18797f 1-27,29-30,32-66,87-356
+  s_49407d0fa190d6::t_8c0214f405e90c 67-86
+  s_49407d0fa190d6::t_e007e1bf7f9a63 28,31
+backend/tests/test_agent.py
+  s_49407d0fa190d6::t_79033021f0c795 1-417
+frontend/src/content/docs/roadmap.mdx
+  s_49407d0fa190d6::t_1e7583e8f60b3b 1-122
+frontend/src/content.config.ts
+  s_49407d0fa190d6::t_87caaf2374dc9f 1-31
+backend/app/services/jobs.py
+  s_49407d0fa190d6::t_5e00563080a503 1-184,211-248
+  s_49407d0fa190d6::t_f7b8f0757b0ea4 185-210
+backend/requirements.txt
+  s_49407d0fa190d6::t_2709fb475301bd 2-3,11-14,17-18,23
+  s_49407d0fa190d6::t_bd724790c45bcf 1,4-10,15-16,19-22,24-48
+backend/app/api/v1/projects.py
+  s_49407d0fa190d6::t_75ed5dfc7ba13c 88-89
+  s_49407d0fa190d6::t_5ab5ab642efa23 1-87,90-114
+frontend/src/content/docs/webhooks.mdx
+  s_49407d0fa190d6::t_c547f0d9ae7145 1-213
+frontend/src/components/ui/badge.tsx
+  s_49407d0fa190d6::t_19ca65025b82bb 1-51
+backend/app/agents/bus.py
+  s_49407d0fa190d6::t_c7c60d43733eec 1-259
+frontend/src/components/Mermaid.astro
+  s_49407d0fa190d6::t_3716277d296a55 1-113
+frontend/src/pages/docs/[...slug].astro
+  s_49407d0fa190d6::t_2863be92ec27d0 1-23
+backend/app/api/v1/agent.py
+  s_49407d0fa190d6::t_e4ff8199d20b52 112-114,118,120-124,126
+  s_49407d0fa190d6::t_3328c8b707991b 1-111,115-117,119,125,127-257
+backend/app/services/uploads.py
+  s_49407d0fa190d6::t_3318b71b4442eb 1-188
+frontend/src/content/docs/introduction.mdx
+  s_49407d0fa190d6::t_96a1188ffd5915 1-140
+.gitignore
+  s_49407d0fa190d6::t_248ca02ddf7d5c 21-24
+  s_49407d0fa190d6::t_b77f055d228d10 1-20
+backend/app/models/base.py
+  s_49407d0fa190d6::t_45453a0dec2cf4 1-30
+backend/app/core/config.py
+  s_49407d0fa190d6::t_e5933116845d69 1-73,82-140,149-177
+  s_49407d0fa190d6::t_8252c976c58dd1 74-81,141-148
+.env.example
+  s_49407d0fa190d6::t_bd724790c45bcf 46-77
+  s_49407d0fa190d6::t_dcfed2943d19c6 1-45
+backend/app/services/media.py
+  s_49407d0fa190d6::t_715a31a6a2f52e 224-225
+  s_49407d0fa190d6::t_bd6eecf6d9cc3d 85-87,90-93
+  s_49407d0fa190d6::t_db0fe214d0ee35 255-261
+  s_49407d0fa190d6::t_78dc4dca49a800 319-320,327,340-341,345-354
+  s_49407d0fa190d6::t_fbb009e954b2e9 1-84,88-89,94-223,226-254,262-318,321-326,328-339,342-344,355-510
+frontend/src/content/docs/uploads.mdx
+  s_49407d0fa190d6::t_56cfe8b80d3aa3 1-199
+backend/app/agents/guardrails.py
+  s_49407d0fa190d6::t_9b6971e60955ec 8-9
+  s_49407d0fa190d6::t_2615e562fa328d 226,239
+  s_49407d0fa190d6::t_2a703bb62defbc 1-7,10-225,227-238,240-347
+frontend/.gitignore
+  s_49407d0fa190d6::t_c61737bcf84898 1-24
+frontend/.vscode/extensions.json
+  s_49407d0fa190d6::t_e1a7e4ce08f3a4 1-4
+frontend/.vscode/launch.json
+  s_49407d0fa190d6::t_803a22ac1bf9bc 1-11
+frontend/package-lock.json
+  s_49407d0fa190d6::t_2ccda3c0320f9e 1-9430
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3b5be9fdf4cfd2ee8b2b32efed4a7c461010326f",
+  "prompts": {},
+  "sessions": {
+    "s_49407d0fa190d6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "35116f4e-1945-4fd4-b538-166626241f43",
+        "model": "claude-opus-5"
+      },
+      "human_author": "pritamscodee <codewithpritam29@gmail.com>"
+    }
+  }
+}
