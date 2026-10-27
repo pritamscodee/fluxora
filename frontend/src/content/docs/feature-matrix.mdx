@@ -1,0 +1,114 @@
+---
+title: Feature matrix
+description: What was studied in the public documentation, what was built, and what was deliberately left out.
+section: Project
+order: 1
+accent: yellow
+---
+
+import Callout from '@/components/docs/Callout.astro';
+
+Derived from publicly documented Mux behaviour — the API reference, webhook guides,
+feature pages and observable dashboard behaviour — on 27 October 2026.
+
+<Callout kind="note" title="Scope of the exercise">
+This is an original implementation of equivalent capabilities, built from public
+documentation. No proprietary code, branding or private system was copied, and nothing
+here depends on assumptions about undocumented internals. Where behaviour was not
+documented, a reasonable design was chosen and the reasoning recorded.
+</Callout>
+
+**Legend** — Built: working and tested. Partial: implemented but incomplete. Out: a
+deliberate decision not to build.
+
+## Ingest
+
+| Capability | Observed | Fluxora | Status |
+| --- | --- | --- | --- |
+| Direct upload via authenticated URL | `POST /video/uploads` returns a one-time PUT URL | Presigned S3 PUT, single-use, TTL-bounded | Built |
+| Pull ingest from a URL | `input[].url` | Background fetch into our own storage | Built |
+| Upload cancel | `PUT /uploads/{id}/cancel` | Terminal `cancelled`, URL revoked | Built |
+| Upload timeout | `timeout` seconds | Reaper reconciles against storage | Built |
+| Multi-codec sources | "hundreds of codecs" | Whatever ffmpeg decodes | Built |
+| Test assets | Non-billed, duration-capped | `test: true` → 10s cap | Built |
+| Trim on ingest | `start_time` / `end_time` | Supported on video input | Built |
+| RTMP / SRT live ingest | Persistent stream key | Schema and API shape only | Partial |
+| DRM | Device-level protection | — | Out |
+
+## Processing
+
+| Capability | Observed | Fluxora | Status |
+| --- | --- | --- | --- |
+| Metadata extraction | duration, aspect ratio, resolution, tracks | ffprobe → asset + tracks | Built |
+| Adaptive bitrate ladder | Smart per-source ladder | Deterministic ladder capped at source | Built |
+| HLS packaging | Master + variant playlists | fMP4, single-pass, ffmpeg-authored master | Built |
+| Thumbnails | `/thumbnail.jpg?time=` | On-demand, cached by render spec | Built |
+| Storyboard / sprite | `/storyboard.vtt` | Tiled sprite + WEBVTT | Built |
+| Animated GIF | `/animated.gif` | Two-pass palette | Built |
+| Audio normalisation | Consistent loudness | EBU R128 two-pass loudnorm | Built |
+| Static MP4 renditions | `mp4_support: standard` | low / medium / high / highest | Built |
+| Master access | Highest-quality download | Temporary signed URL to the source | Built |
+| Clipping | Frame-accurate | Re-encoded cut into a new asset | Built |
+| Uploaded subtitles | Sidecar text tracks | VTT/SRT normalised to WEBVTT | Built |
+| Auto-generated captions | Automatic speech recognition | Whisper via the agent pipeline | Built |
+| Watermarking | Image overlay | — | Out |
+| Just-in-time encoding | Playable seconds after upload | Full ladder rendered up front | Out |
+
+## Delivery
+
+| Capability | Observed | Fluxora | Status |
+| --- | --- | --- | --- |
+| Playback IDs | Opaque, decoupled from asset id | Dedicated rows with their own policy | Built |
+| Public playback | Unauthenticated manifest URL | `/v1/stream/{id}.m3u8` | Built |
+| Signed playback | JWT, audience per resource kind | RS256, per-project keys, `kid` lookup | Built |
+| Playback restrictions | Referrer / user-agent allowlists | Schema only | Partial |
+| Multi-CDN | Redundant delivery | Single origin + cache headers | Out |
+| LL-HLS | ~5 second latency | Standard latency only | Out |
+| Simulcast to third parties | Facebook, YouTube, Twitch | — | Out |
+
+## Platform
+
+| Capability | Observed | Fluxora | Status |
+| --- | --- | --- | --- |
+| Environments per project | dev/prod key separation | `projects.environment` | Built |
+| API keys | id + secret, Basic auth | `fx_…` + Argon2id-hashed secret | Built |
+| Webhooks | Signed POST, retried | HMAC-SHA256, exponential retries | Built |
+| Event log | Per-event id, replayable | Append-only table + honest replay | Built |
+| Usage metering | Per-asset minutes | Daily `usage_records` rollup | Built |
+| Engagement analytics | Views, unique viewers, playing time | Schema and beacon shape only | Partial |
+| AI chapters / summaries | "Mux Robots" | Claude or GPT via the agent | Built |
+
+## Webhook events
+
+Implemented, using the same dotted naming so integrations read naturally:
+
+```
+video.upload.created          video.upload.asset_created    video.upload.cancelled
+video.upload.errored          video.asset.created           video.asset.ready
+video.asset.errored           video.asset.updated           video.asset.deleted
+video.asset.track.created     video.asset.track.ready       video.asset.track.errored
+video.asset.static_rendition.ready
+```
+
+The live-stream family is reserved in the API and awaits the live implementation.
+
+## Beyond the original
+
+Capabilities with no counterpart in the system that was studied:
+
+| Capability | Notes |
+| --- | --- |
+| Agentic operation | LangGraph planner over a typed tool registry |
+| Two-layer guardrails | Guardrails AI for language, policy for structure |
+| Human-in-the-loop approval | Structural gate on expensive and destructive tools |
+| Dead-letter queue with replay | Inspectable BullMQ failures, scoped per project |
+| Storage portability | One backend across MinIO, SeaweedFS, R2 and S3 |
+
+## Why the omissions
+
+<Callout kind="decision">
+Each "Out" row is a product in its own right — DRM needs device-vendor licensing,
+LL-HLS needs a different packaging and delivery path, multi-CDN is an operations
+discipline. Shipping one complete upload-to-playback path, verified end to end, was worth
+more than four features that each stop halfway.
+</Callout>

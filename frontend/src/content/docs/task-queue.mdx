@@ -1,0 +1,183 @@
+---
+title: Task queue and dead letters
+description: Every agent tool call is a BullMQ job on Redis — five attempts, exponential backoff, then a dead-letter queue you can inspect and replay.
+section: The agent
+order: 3
+accent: orange
+---
+
+import Callout from '@/components/docs/Callout.astro';
+import Mermaid from '@/components/Mermaid.astro';
+import Endpoint from '@/components/docs/Endpoint.astro';
+
+The agent never calls a tool in-process. Every call is enqueued on Redis as a BullMQ job
+and awaited.
+
+<Mermaid
+  caption="Producer, queue, worker, result. A permanent failure skips the retries and goes straight to the dead-letter queue."
+  chart={`flowchart LR
+  G["LangGraph<br/>execute node"] -->|"enqueue"| Q[("BullMQ queue<br/>fluxora-agent-tools")]
+  Q --> W["Agent tool worker"]
+  W -->|"validate + execute"| T["Tool"]
+  T -->|"success"| P[("result key")]
+  T -->|"transient failure"| RT{"attempt<br/>&lt; 5?"}
+  RT -->|yes| BO["backoff 2s → 32s"]
+  BO --> Q
+  RT -->|no| DLQ[("fluxora-agent-tools-dlq")]
+  T -->|"permanent failure"| DLQ
+  DLQ --> P
+  P --> G`}
+/>
+
+## Why a queue at all
+
+<Callout kind="decision">
+An in-process call would be simpler. The queue buys three things that are hard to retrofit:
+
+**Retries with backoff.** A transcode kicked off by the agent survives a transient
+database or storage blip without the user seeing a failure.
+
+**A dead-letter queue.** A task that exhausts its attempts is preserved with its payload,
+error and history — inspectable and replayable, rather than vanishing into Redis' failed
+set.
+
+**Isolation.** Tools run in a separate process. A tool that hangs or dies cannot take the
+API down with it.
+</Callout>
+
+## Retry policy
+
+```python
+MAX_ATTEMPTS = 5
+BACKOFF_MS = 2000  # exponential: 2s, 4s, 8s, 16s
+```
+
+```python
+await queue.add(tool, payload, {
+    "jobId": job_id,
+    "attempts": MAX_ATTEMPTS,
+    "backoff": {"type": "exponential", "delay": BACKOFF_MS},
+    "removeOnComplete": {"age": 3600, "count": 1000},
+    "removeOnFail": {"age": 86400, "count": 5000},
+})
+```
+
+Terminal jobs are kept in a bounded window so there is something to debug, without letting
+Redis grow forever.
+
+## Permanent versus transient failures
+
+Not every failure deserves five attempts.
+
+```python
+except (PermanentToolError, ToolError) as exc:
+    # Deterministic: another attempt would fail identically.
+    await bus.push_dead_letter(redis, job.id, data, message, attempts)
+    await bus.publish_result(redis, job.id, {"ok": False, "dead_lettered": True, ...})
+    return  # not re-raised, so BullMQ does not retry
+```
+
+An unknown tool, invalid arguments, or a project that no longer exists will fail the same
+way in two seconds and again in thirty-two. These dead-letter on the **first** attempt.
+
+Everything else — a dropped connection, a storage timeout — is re-raised so BullMQ
+schedules the next attempt. A test asserts a deterministic failure reports
+`attempts == 1`, so the distinction cannot silently regress.
+
+## Results
+
+The worker publishes each outcome to a per-job Redis key, which the producer blocks on:
+
+```python
+await redis.rpush(f"fluxora:agent:result:{job_id}", json.dumps(payload))
+await redis.expire(key, 3600)
+```
+
+<Callout kind="note" title="A list, not pub/sub">
+With pub/sub the producer might not be subscribed at the exact moment the worker
+finishes, and the result would be lost — the run would then hang until its timeout for a
+task that actually succeeded. A list with a TTL has no such race: the result waits.
+</Callout>
+
+BullMQ's own `returnvalue` is only readable once a job is finished, and polling it is both
+slower and racier than a blocking pop.
+
+## Timeouts are not failures
+
+```python
+result = await bus.await_result(job_id, timeout=900)
+# "tool task {id} did not report a result within 900s; it may still be running"
+```
+
+A result that has not arrived is reported as exactly that. Calling it a failure would be a
+lie, and would invite a retry that duplicates work still in flight.
+
+## Dead letters
+
+Each dead letter keeps everything needed to understand and replay it:
+
+```json
+{
+  "job_id": "run-abc-1-3f2a9b01",
+  "payload": { "tool": "get_asset", "args": { "asset_id": "gone" },
+               "project_id": "proj_...", "run_id": "run-abc" },
+  "error": "ToolError: asset gone was not found",
+  "attempts": 1,
+  "dead_lettered_at": "2026-10-27T12:34:56Z"
+}
+```
+
+The queue is trimmed to its most recent 10,000 entries, so a persistent failure loop
+cannot exhaust Redis memory.
+
+<Endpoint method="GET" path="/v1/projects/{id}/agent/dead-letters" auth="dashboard">
+  Filtered to this project — the underlying queue is process-wide.
+</Endpoint>
+<Endpoint method="POST" path="/v1/projects/{id}/agent/dead-letters/{job_id}/replay" auth="dashboard">
+  Re-enqueues with a fresh attempt budget and removes the dead-letter entry.
+</Endpoint>
+<Endpoint method="GET" path="/v1/projects/{id}/agent/queue" auth="dashboard">
+  Redis health, queue depth, and the dead-letter count.
+</Endpoint>
+
+Replay is ownership-checked: a job id belonging to another project returns 404 rather than
+being replayable.
+
+## Running the worker
+
+```bash
+python -m app.workers.agent_worker
+```
+
+```
+agent tool worker listening queue=fluxora-agent-tools concurrency=4
+  attempts=5 dlq=fluxora-agent-tools-dlq
+```
+
+Scale it horizontally; BullMQ handles distribution. The lock duration matches
+`AGENT_TOOL_TIMEOUT_SECONDS`, so a long-running tool is not reclaimed mid-execution.
+
+## Redis configuration
+
+```
+--appendonly yes
+--maxmemory-policy noeviction
+--notify-keyspace-events Ex
+```
+
+`noeviction` matters: evicting a queue key would silently drop in-flight jobs. Keyspace
+notifications are what BullMQ uses for delayed and stalled job handling.
+
+## Two queues, on purpose
+
+| | Media pipeline | Agent tools |
+| --- | --- | --- |
+| Backend | Postgres `jobs` table | BullMQ on Redis |
+| Work | Minutes of ffmpeg | Seconds of database and API calls |
+| Retries | 3, with 30s–32m backoff | 5, with 2s–32s backoff |
+| On exhaustion | Asset marked `errored`, webhook fires | Dead-letter queue |
+| Why | Audit trail next to the asset; no extra infra | Retry and DLQ semantics are the point |
+
+Different problems, different tools. The media queue's value is that a job row sits
+alongside the asset it belongs to and can be queried with it; the agent queue's value is
+BullMQ's retry machinery. Forcing either into the other's shape would lose something real.

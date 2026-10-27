@@ -1,0 +1,216 @@
+---
+title: API overview
+description: Conventions, authentication, errors, pagination and idempotency.
+section: API reference
+order: 1
+accent: violet
+---
+
+import Callout from '@/components/docs/Callout.astro';
+import Mermaid from '@/components/Mermaid.astro';
+import Endpoint from '@/components/docs/Endpoint.astro';
+
+Base URL `https://api.fluxora.dev`, or `http://localhost:8000` locally. Everything lives
+under `/v1`. Interactive reference at `/docs`, OpenAPI schema at `/openapi.json`.
+
+## The envelope
+
+Every success response wraps its payload in `data`:
+
+```json
+{ "data": { "id": "Qdh4pm..." } }
+{ "data": [ { "id": "Qdh4pm..." } ] }
+```
+
+Errors use one shape, always:
+
+```json
+{
+  "error": {
+    "type": "invalid_parameters",
+    "messages": ["input: must contain exactly one entry of type 'video'"]
+  }
+}
+```
+
+`type` is machine-readable and stable; `messages` is a list because validation usually has
+more than one thing to say.
+
+| HTTP | `error.type` |
+| --- | --- |
+| 400, 422 | `invalid_parameters` |
+| 401 | `unauthorized` |
+| 403 | `forbidden` |
+| 404 | `not_found` |
+| 409 | `conflict` |
+| 429 | `rate_limited` |
+| 500 | `internal_error` |
+| 503 | `model_unavailable` |
+
+## Two authentication systems
+
+<Mermaid
+  caption="Deliberately disjoint. A leaked dashboard token cannot drive ingest; an API key cannot read account settings."
+  chart={`flowchart TB
+  H["Human in a browser"] -->|"Bearer JWT"| D["/v1/auth<br/>/v1/projects"]
+  M["Server-side integration"] -->|"Basic key:secret"| V["/v1/video/*"]
+  P["Viewer"] -->|"public or ?token="| S["/v1/stream/*"]
+  D -.->|"cannot reach"| V
+  V -.->|"cannot reach"| D`}
+/>
+
+### Dashboard — Bearer
+
+```bash
+curl localhost:8000/v1/auth/me -H "authorization: Bearer $ACCESS_TOKEN"
+```
+
+HS256, 30-minute access tokens, 30-day rotating refresh tokens.
+
+### Video API — Basic
+
+```bash
+curl -u "$KEY_ID:$SECRET" localhost:8000/v1/video/assets
+```
+
+An API key resolves to exactly one project, so **no `/v1/video/*` endpoint takes a project
+id**. That removes a class of cross-tenant bug by construction rather than by checking.
+
+Secrets are Argon2id-hashed. A key id that does not exist is still hashed against a decoy
+so a missing key and a wrong secret take the same time.
+
+<Callout kind="note" title="Revoked, not deleted">
+Deleting an API key sets `revoked_at`. The row stays as the audit record of what was used
+and when. A revoked key returns 403 — distinguishable from 401 for an unknown key, which
+makes "my key stopped working" diagnosable.
+</Callout>
+
+## Rotating refresh tokens
+
+<Endpoint method="POST" path="/v1/auth/refresh" auth="public" />
+
+Each refresh consumes the presented token and issues a new pair. Presenting an
+already-spent token means it leaked, so the **entire token family for that user is
+revoked**, not just the one request rejected.
+
+```
+register → refresh_1
+refresh_1 → refresh_2    (refresh_1 now revoked)
+refresh_1 again → 401, and refresh_2 is revoked too
+```
+
+## Pagination
+
+```
+?limit=25&page=1
+```
+
+`limit` is 1–100 (default 25), `page` is 1-based. Out-of-range values are 422, not
+silently clamped. The total count comes back in `X-Total-Count`.
+
+## Unknown fields are rejected
+
+```bash
+curl -u "$KEY" -X POST .../v1/video/uploads -d '{"timeuot": 600}'
+# 422 invalid_parameters
+```
+
+A typo must not be silently accepted. The alternative — accepting and ignoring it — means
+a caller sets `timeuot` and spends an afternoon wondering why the timeout never changes.
+
+## Idempotency
+
+Mutating API-key endpoints accept `Idempotency-Key`:
+
+```bash
+curl -u "$KEY" -X POST .../v1/video/uploads -H 'idempotency-key: order-12345'
+```
+
+The key, a fingerprint of the request, and the response are stored for 24 hours. A replay
+with the same key returns the stored response; the same key with a **different body** is a
+409 rather than a silent second execution.
+
+## Timestamps and identifiers
+
+RFC 3339 UTC (`2026-10-27T12:00:00Z`). Durations are float seconds.
+
+Public ids are opaque base58 strings from an alphabet with no `0`, `O`, `I` or `l`, so
+they survive being read aloud or hand-copied. They are unguessable and reveal nothing
+about volume or ordering. Prefixed ids (`evt_`, `fx_`, `sk_`, `whsec_`) make it obvious
+what a string is when it turns up in a log.
+
+## Endpoint map
+
+### Auth
+<Endpoint method="POST" path="/v1/auth/register" auth="public" />
+<Endpoint method="POST" path="/v1/auth/login" auth="public" />
+<Endpoint method="POST" path="/v1/auth/refresh" auth="public" />
+<Endpoint method="POST" path="/v1/auth/logout" auth="dashboard" />
+<Endpoint method="GET" path="/v1/auth/me" auth="dashboard" />
+
+### Projects and keys
+<Endpoint method="POST" path="/v1/projects" auth="dashboard" />
+<Endpoint method="GET" path="/v1/projects" auth="dashboard" />
+<Endpoint method="GET" path="/v1/projects/{id}" auth="dashboard" />
+<Endpoint method="PATCH" path="/v1/projects/{id}" auth="dashboard" />
+<Endpoint method="DELETE" path="/v1/projects/{id}" auth="dashboard" />
+<Endpoint method="POST" path="/v1/projects/{id}/api-keys" auth="dashboard" />
+<Endpoint method="GET" path="/v1/projects/{id}/api-keys" auth="dashboard" />
+<Endpoint method="DELETE" path="/v1/projects/{id}/api-keys/{key_id}" auth="dashboard" />
+
+### Uploads
+<Endpoint method="POST" path="/v1/video/uploads" auth="api-key" />
+<Endpoint method="GET" path="/v1/video/uploads" auth="api-key" />
+<Endpoint method="GET" path="/v1/video/uploads/{id}" auth="api-key" />
+<Endpoint method="PUT" path="/v1/video/uploads/{id}/cancel" auth="api-key" />
+<Endpoint method="PUT" path="/v1/video/uploads/{id}/complete" auth="api-key" />
+
+### Assets
+<Endpoint method="POST" path="/v1/video/assets" auth="api-key" />
+<Endpoint method="GET" path="/v1/video/assets" auth="api-key" />
+<Endpoint method="GET" path="/v1/video/assets/{id}" auth="api-key" />
+<Endpoint method="PATCH" path="/v1/video/assets/{id}" auth="api-key" />
+<Endpoint method="DELETE" path="/v1/video/assets/{id}" auth="api-key" />
+<Endpoint method="GET" path="/v1/video/assets/{id}/input-info" auth="api-key" />
+<Endpoint method="GET" path="/v1/video/assets/{id}/master" auth="api-key" />
+<Endpoint method="POST" path="/v1/video/assets/{id}/clip" auth="api-key" />
+<Endpoint method="POST" path="/v1/video/assets/{id}/playback-ids" auth="api-key" />
+<Endpoint method="DELETE" path="/v1/video/assets/{id}/playback-ids/{pid}" auth="api-key" />
+<Endpoint method="POST" path="/v1/video/assets/{id}/tracks" auth="api-key" />
+<Endpoint method="DELETE" path="/v1/video/assets/{id}/tracks/{tid}" auth="api-key" />
+
+### Delivery
+<Endpoint method="GET" path="/v1/stream/{playback_id}.m3u8" auth="public" />
+<Endpoint method="GET" path="/v1/stream/{playback_id}/{filename}" auth="public" />
+<Endpoint method="GET" path="/v1/video/playback-ids/{id}" auth="public" />
+
+### Webhooks, events and signing keys
+<Endpoint method="POST" path="/v1/projects/{id}/webhooks" auth="dashboard" />
+<Endpoint method="GET" path="/v1/projects/{id}/webhooks" auth="dashboard" />
+<Endpoint method="PATCH" path="/v1/projects/{id}/webhooks/{wid}" auth="dashboard" />
+<Endpoint method="DELETE" path="/v1/projects/{id}/webhooks/{wid}" auth="dashboard" />
+<Endpoint method="POST" path="/v1/projects/{id}/webhooks/{wid}/rotate-secret" auth="dashboard" />
+<Endpoint method="GET" path="/v1/projects/{id}/webhooks/{wid}/deliveries" auth="dashboard" />
+<Endpoint method="GET" path="/v1/projects/{id}/events" auth="dashboard" />
+<Endpoint method="POST" path="/v1/projects/{id}/events/{event_id}/redeliver" auth="dashboard" />
+<Endpoint method="GET" path="/v1/projects/{id}/event-types" auth="dashboard" />
+<Endpoint method="POST" path="/v1/projects/{id}/signing-keys" auth="dashboard" />
+<Endpoint method="GET" path="/v1/projects/{id}/signing-keys" auth="dashboard" />
+<Endpoint method="DELETE" path="/v1/projects/{id}/signing-keys/{key_id}" auth="dashboard" />
+<Endpoint method="POST" path="/v1/projects/{id}/playback-tokens" auth="dashboard" />
+
+### Agent
+<Endpoint method="GET" path="/v1/projects/{id}/agent/tools" auth="dashboard" />
+<Endpoint method="POST" path="/v1/projects/{id}/agent/runs" auth="dashboard" />
+<Endpoint method="GET" path="/v1/projects/{id}/agent/runs" auth="dashboard" />
+<Endpoint method="GET" path="/v1/projects/{id}/agent/runs/{run_id}" auth="dashboard" />
+<Endpoint method="POST" path="/v1/projects/{id}/agent/runs/{run_id}/approve" auth="dashboard" />
+<Endpoint method="GET" path="/v1/projects/{id}/agent/queue" auth="dashboard" />
+<Endpoint method="GET" path="/v1/projects/{id}/agent/dead-letters" auth="dashboard" />
+<Endpoint method="POST" path="/v1/projects/{id}/agent/dead-letters/{job_id}/replay" auth="dashboard" />
+
+### Meta
+<Endpoint method="GET" path="/health" auth="public" />
+<Endpoint method="GET" path="/healthz" auth="public">
+  Readiness: fails if the database is unreachable.
+</Endpoint>

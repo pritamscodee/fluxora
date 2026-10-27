@@ -1,0 +1,39 @@
+---
+/**
+ * One API endpoint: verb, path, and a one-line description. Verb colours are fixed in
+ * global.css so a GET always looks like a GET.
+ */
+interface Props {
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  path: string;
+  auth?: 'dashboard' | 'api-key' | 'public';
+}
+
+const { method, path, auth } = Astro.props;
+
+const AUTH_LABEL = {
+  dashboard: 'Bearer',
+  'api-key': 'Basic',
+  public: 'Public',
+} as const;
+---
+
+<div class="not-prose brutal-sm my-3 flex flex-wrap items-center gap-3 bg-card px-3 py-2">
+  <span
+    class={`brutal-tag verb-${method.toLowerCase()} shrink-0`}
+    style="color:#0b0b0b"
+  >
+    {method}
+  </span>
+  <code class="font-mono text-[13px] font-semibold break-all">{path}</code>
+  {
+    auth && (
+      <span class="ml-auto shrink-0 border-2 border-[var(--brutal-ink)] px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider">
+        {AUTH_LABEL[auth]}
+      </span>
+    )
+  }
+</div>
+{Astro.slots.has('default') && (
+  <div class="not-prose mb-4 pl-1 text-sm text-muted-foreground"><slot /></div>
+)}

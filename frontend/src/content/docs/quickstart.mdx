@@ -1,0 +1,257 @@
+---
+title: Quickstart
+description: From an empty clone to a video playing in your browser, in about ten minutes.
+section: Getting started
+order: 1
+accent: lime
+---
+
+import Callout from '@/components/docs/Callout.astro';
+import Mermaid from '@/components/Mermaid.astro';
+
+## Prerequisites
+
+| Tool | Why |
+| --- | --- |
+| FFmpeg 6+ on `PATH` | All transcoding. `ffmpeg -version` must work. |
+| Python 3.12+ | API and workers. |
+| Node 20+ | These docs. |
+| Docker | Object storage and Redis. |
+
+A Postgres database is optional to start — the stack falls back to SQLite — but you will
+want [Neon](https://neon.tech) for anything real.
+
+## 1. Infrastructure
+
+```bash
+docker compose up -d
+```
+
+That brings up an S3-compatible object store on `localhost:9000` and Redis on
+`localhost:6379`.
+
+<Callout kind="note" title="Why SeaweedFS and not MinIO">
+MinIO's container images are no longer publicly pullable — Docker Hub returns
+`pull access denied` and quay.io returns 401 on anonymous manifest requests. SeaweedFS
+speaks the same S3 API on the same port with the same credentials, so the application
+cannot tell the difference. If you have registry access, `docker compose --profile minio
+up -d` swaps it back with no config change. Details in [ADR-0002](/docs/adr-0002-object-storage).
+</Callout>
+
+Check both are healthy:
+
+```bash
+docker compose ps
+```
+
+## 2. Configuration
+
+```bash
+cp .env.example .env
+```
+
+The defaults already point at the compose stack. The two values worth filling in now:
+
+```bash
+# Paste the Neon connection string exactly as Neon gives it to you.
+DATABASE_URL=postgresql://user:pass@ep-xxx.region.aws.neon.tech/neondb?sslmode=require
+
+# Needed only for the agent.
+OPENAI_API_KEY=sk-...
+```
+
+<Callout kind="tip" title="Neon URLs work unmodified">
+Neon hands out a libpq-style URL with `?sslmode=require&channel_binding=require`. asyncpg
+does not understand those parameters and raises on connect. Rather than making you
+hand-edit the string, Fluxora rewrites the scheme, strips the libpq-only parameters and
+re-applies TLS through the driver's own option. Paste it as-is.
+</Callout>
+
+## 3. Database
+
+```bash
+cd backend
+python -m venv .venv
+.venv/Scripts/pip install -r requirements-dev.txt
+.venv/Scripts/python -m alembic upgrade head
+```
+
+That creates twenty tables. On SQLite the API also self-creates the schema at startup, so
+you can skip the migration locally if you are only kicking the tyres.
+
+## 4. Run the processes
+
+Four terminals, or your process manager of choice.
+
+```bash
+.venv/Scripts/python -m uvicorn app.main:app --reload
+```
+
+```bash
+.venv/Scripts/python -m app.workers.runner
+```
+
+```bash
+.venv/Scripts/python -m app.workers.agent_worker
+```
+
+```bash
+cd frontend && npm install && npm run dev
+```
+
+Confirm the API is alive — `/healthz` fails if the database is unreachable, which is what
+makes it useful as a readiness probe:
+
+```bash
+curl localhost:8000/healthz
+# {"status":"ok","database":"ok"}
+```
+
+Interactive API docs are at `http://localhost:8000/docs`.
+
+## 5. Upload a video
+
+### Register and create a project
+
+```bash
+curl -sX POST localhost:8000/v1/auth/register \
+  -H 'content-type: application/json' \
+  -d '{"email":"you@example.com","password":"a-long-enough-password"}'
+```
+
+Keep the `access_token`, then:
+
+```bash
+curl -sX POST localhost:8000/v1/projects \
+  -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"name":"my-project","environment":"development"}'
+```
+
+```bash
+curl -sX POST localhost:8000/v1/projects/$PROJECT_ID/api-keys \
+  -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"name":"local"}'
+```
+
+<Callout kind="warning" title="The secret is shown once">
+It is stored Argon2id-hashed. If you lose it, create another key — there is no recovery
+path, by design.
+</Callout>
+
+### Ask for an upload URL
+
+```bash
+curl -su "$KEY_ID:$SECRET" -X POST localhost:8000/v1/video/uploads \
+  -H 'content-type: application/json' \
+  -d '{"new_asset_settings":{"playback_policy":["public"],"mp4_support":"standard"}}'
+```
+
+```json
+{
+  "data": {
+    "id": "7xK2mR...",
+    "status": "waiting",
+    "url": "http://localhost:9000/fluxora/projects/.../source?X-Amz-Signature=...",
+    "timeout": 3600
+  }
+}
+```
+
+### Upload the bytes
+
+Straight to storage. These bytes never touch the API.
+
+```bash
+curl -T my-video.mp4 "$UPLOAD_URL"
+```
+
+### Watch it become an asset
+
+```bash
+curl -su "$KEY_ID:$SECRET" localhost:8000/v1/video/uploads/$UPLOAD_ID
+```
+
+Polling the upload is what notices the object landed and promotes it:
+
+```json
+{ "data": { "status": "asset_created", "asset_id": "Qdh4pm...", "url": null } }
+```
+
+The `url` comes back `null` once spent — a presigned PUT is a write capability and is not
+handed out twice.
+
+Now poll the asset until `status` is `ready`:
+
+```bash
+curl -su "$KEY_ID:$SECRET" localhost:8000/v1/video/assets/$ASSET_ID
+```
+
+```json
+{
+  "data": {
+    "status": "ready",
+    "duration": 126.4,
+    "aspect_ratio": "16:9",
+    "max_stored_resolution": "FHD",
+    "playback_ids": [{ "id": "aB3x...", "policy": "public" }]
+  }
+}
+```
+
+## 6. Play it
+
+```
+http://localhost:8000/v1/stream/{PLAYBACK_ID}.m3u8
+```
+
+Open it in Safari, VLC, or any hls.js player. A thumbnail at any timestamp:
+
+```
+http://localhost:8000/v1/stream/{PLAYBACK_ID}/thumbnail.jpg?time=12&width=640
+```
+
+And because you asked for `mp4_support: standard`:
+
+```
+http://localhost:8000/v1/stream/{PLAYBACK_ID}/medium.mp4
+```
+
+## 7. Check it all works
+
+```bash
+cd backend
+.venv/Scripts/python -m scripts.smoke
+```
+
+<Mermaid
+  caption="What the smoke test exercises: the real API over HTTP, a separate worker process, real storage, real database."
+  chart={`flowchart LR
+  S["scripts.smoke"] -->|HTTP| A["API"]
+  S -->|presigned PUT| O[("Object storage")]
+  A --> D[("Database")]
+  W["Worker process"] --> D
+  W --> O
+  S -->|"poll until ready"| A
+  S -->|"manifest, segment, thumbnail"| A
+  S -->|"delete, confirm 404"| A`}
+/>
+
+## Troubleshooting
+
+**`ffmpeg not found`** — it must be on `PATH` for the worker process specifically, or set
+`FFMPEG_PATH` to an absolute path.
+
+**Asset stuck on `preparing`** — the worker is not running, or crashed. Check its log, and
+check the job row: `GET /v1/projects/{id}/events` shows what has happened so far.
+
+**Asset went `errored`** — the response carries `errors.type` and `errors.messages`, and
+the messages include the tail of ffmpeg's stderr, which is almost always enough.
+
+**`NoSuchBucket`** — the bucket is created on first use; if the store was not up when the
+API started, restart the API.
+
+**Upload PUT returns 403** — the presigned URL expired (default one hour), or the API and
+your client disagree about the storage hostname. See `S3_PUBLIC_ENDPOINT` in
+[Configuration](/docs/configuration).

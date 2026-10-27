@@ -1,0 +1,113 @@
+---
+/**
+ * Mermaid diagram, rendered in the browser and themed to match the page.
+ *
+ * Mermaid's own themes assume soft shadows and pastel fills, which fight the rest of the
+ * design. The theme variables below force the same flat fills, black strokes and mono
+ * labels the rest of the site uses, so a diagram reads as part of the page rather than
+ * an embedded screenshot.
+ */
+interface Props {
+  /** Mermaid source. */
+  chart: string;
+  /** Short caption shown under the diagram. */
+  caption?: string;
+}
+
+const { chart, caption } = Astro.props;
+---
+
+<figure class="not-prose my-8">
+  <div
+    class="mermaid-diagram brutal overflow-x-auto bg-white p-5 dark:bg-[#1d1b26]"
+    data-mermaid={chart.trim()}
+  >
+    <div class="mermaid-fallback font-mono text-xs text-muted-foreground">
+      Rendering diagram…
+    </div>
+  </div>
+  {
+    caption && (
+      <figcaption class="mt-3 border-l-[6px] border-[var(--brutal-ink)] pl-3 text-sm font-semibold">
+        {caption}
+      </figcaption>
+    )
+  }
+</figure>
+
+<script>
+  import mermaid from 'mermaid';
+
+  const INK = '#0b0b0b';
+
+  function isDark() {
+    return document.documentElement.classList.contains('dark');
+  }
+
+  function configure() {
+    const dark = isDark();
+    const ink = dark ? '#f7f4ea' : INK;
+    mermaid.initialize({
+      startOnLoad: false,
+      securityLevel: 'strict',
+      fontFamily: "'Geist Mono Variable', ui-monospace, monospace",
+      theme: 'base',
+      themeVariables: {
+        background: dark ? '#1d1b26' : '#ffffff',
+        primaryColor: dark ? '#2b2838' : '#ffd803',
+        primaryTextColor: ink,
+        primaryBorderColor: ink,
+        secondaryColor: dark ? '#262334' : '#6ee7f9',
+        secondaryBorderColor: ink,
+        tertiaryColor: dark ? '#2b2838' : '#b8f84a',
+        tertiaryBorderColor: ink,
+        lineColor: ink,
+        textColor: ink,
+        mainBkg: dark ? '#2b2838' : '#ffd803',
+        nodeBorder: ink,
+        clusterBkg: dark ? '#1d1b26' : '#f0e7cd',
+        clusterBorder: ink,
+        edgeLabelBackground: dark ? '#1d1b26' : '#ffffff',
+        fontSize: '14px',
+      },
+      flowchart: { curve: 'linear', nodeSpacing: 44, rankSpacing: 52, useMaxWidth: true },
+      sequence: { useMaxWidth: true, mirrorActors: false, actorMargin: 48 },
+      gantt: { useMaxWidth: true },
+    });
+  }
+
+  let counter = 0;
+
+  async function renderAll() {
+    configure();
+    const blocks = document.querySelectorAll<HTMLElement>('.mermaid-diagram[data-mermaid]');
+    for (const block of blocks) {
+      const source = block.dataset.mermaid;
+      if (!source) continue;
+      try {
+        const { svg } = await mermaid.render(`mmd-${counter++}`, source);
+        block.innerHTML = svg;
+        const el = block.querySelector('svg');
+        if (el) {
+          // Let the SVG scale down on narrow screens rather than forcing the page wide.
+          el.removeAttribute('height');
+          el.style.maxWidth = '100%';
+          el.style.height = 'auto';
+        }
+      } catch (error) {
+        // A malformed diagram should show its source, not an empty box.
+        block.innerHTML =
+          '<pre class="text-xs whitespace-pre-wrap text-red-600">' +
+          'Diagram failed to render:\n\n' +
+          String(source).replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' })[c]!) +
+          '</pre>';
+        console.error('mermaid render failed', error);
+      }
+    }
+  }
+
+  renderAll();
+  // Astro swaps the DOM on client-side navigation, so diagrams must be re-rendered.
+  document.addEventListener('astro:page-load', renderAll);
+  window.addEventListener('fluxora:theme-change', renderAll);
+</script>

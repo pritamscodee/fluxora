@@ -1,0 +1,158 @@
+---
+title: Contributing
+description: Repository layout, local setup, conventions, and what a good change looks like here.
+section: Project
+order: 2
+accent: lime
+---
+
+import Callout from '@/components/docs/Callout.astro';
+
+## Layout
+
+```
+backend/
+  app/
+    api/v1/      routes: auth, projects, uploads, assets, delivery,
+                 webhooks, signing_keys, agent
+    agents/      graph, tools, guardrails, bus, llm
+    core/        config, db, security, errors, ids, telemetry
+    models/      SQLAlchemy models
+    schemas/     Pydantic request and response models
+    services/    assets, uploads, storage, media, jobs, events
+    workers/     media worker, agent tool worker, handlers
+  migrations/    Alembic
+  tests/
+  scripts/       smoke test
+frontend/        this documentation site (Astro)
+docs/            feature matrix, API contracts, ADRs
+docker-compose.yml
+```
+
+## Setup
+
+```bash
+docker compose up -d
+cp .env.example .env
+
+cd backend
+python -m venv .venv
+.venv/Scripts/pip install -r requirements-dev.txt
+.venv/Scripts/python -m alembic upgrade head
+.venv/Scripts/python -m pytest -q
+```
+
+```bash
+cd frontend && npm install && npm run dev
+```
+
+## Layering
+
+```
+routes → services → models
+            ↓
+         workers
+```
+
+- **Routes** parse, authenticate, and delegate. No business logic, no ffmpeg.
+- **Services** own domain logic and emit events. No HTTP concerns.
+- **Workers** do the expensive work. No HTTP concerns.
+- **Models** are persistence only.
+
+A route that calls ffmpeg, or a service that raises `HTTPException`, is a layering bug.
+
+## Conventions
+
+**Every mutating endpoint emits an event.** It is how customers find out, and how
+operators debug.
+
+**Every job gets an idempotency key**, composed so that a *different* request is different
+work. `mp4:{asset_id}:{level}` rather than `mp4:{asset_id}` — otherwise switching MP4
+levels is swallowed as a duplicate.
+
+**Request models forbid extra fields.** A typo should be a 422, not a silently ignored
+setting.
+
+**Errors use the envelope.** Raise `NotFound`, `Conflict`, `InvalidParameters` — not a
+bare `HTTPException`.
+
+**ffmpeg is always an argv list.** Never a shell string, never `shell=True`.
+
+**404, not 403, for another tenant's resource.** Existence must not be confirmable.
+
+## Adding things
+
+### An endpoint
+
+1. Request and response models in `app/schemas/`.
+2. Route in `app/api/v1/`, using `ApiProject` or `OwnedProject` for scoping.
+3. Domain logic in a service; emit an event if it changes state.
+4. Tests: the happy path, the auth failure, the validation failure, and tenant isolation.
+
+### A model change
+
+```bash
+.venv/Scripts/python -m alembic revision --autogenerate -m "what changed"
+```
+
+Read the generated migration. Autogenerate misses enum changes, data migrations and
+anything requiring a backfill.
+
+### A job type
+
+1. Constant in `app/services/jobs.py`.
+2. Handler in `app/workers/handlers.py` — idempotent, deterministic output keys.
+3. Register it in `HANDLERS`.
+4. A test asserts every job type has a handler; an unregistered type fails loudly.
+
+### An agent tool
+
+See the [tool reference](/docs/agent-tools). Pick the risk level honestly: if it spends
+money or cannot be undone, it is at least `expensive`.
+
+### A docs page
+
+Add an `.mdx` file under `frontend/src/content/docs/` with `title`, `description`,
+`section`, `order` and `accent`. The sidebar builds itself from the collection.
+
+## Tests
+
+```bash
+.venv/Scripts/python -m pytest -q
+FLUXORA_TEST_STORAGE=s3 .venv/Scripts/python -m pytest -q
+.venv/Scripts/python -m scripts.smoke
+```
+
+Both storage modes must pass.
+
+<Callout kind="tip" title="Tests worth writing">
+The assertions that have caught real bugs here were mostly negatives: nothing happened
+before approval; a spent upload URL is not handed back; a plan cannot be swapped after
+approval; a deleted asset stops playing immediately; a wrong webhook secret fails
+verification. If a change adds a guarantee, assert the thing that would violate it.
+</Callout>
+
+## Style
+
+- Comments explain **why**, not what. A comment restating the code is noise; one
+  explaining a non-obvious constraint is the most valuable line in the file.
+- Type hints everywhere. Pydantic for boundaries, dataclasses for internals.
+- `ruff` for linting and formatting.
+
+## Pull requests
+
+- One concern per PR.
+- Tests for new behaviour; both storage modes green.
+- An ADR in `docs/` for anything architectural.
+- Update these docs when behaviour changes. Documentation that drifts is worse than none,
+  because people trust it.
+
+## Known rough edges
+
+Good first contributions:
+
+- Live streaming is modelled but not implemented — see [Roadmap](/docs/roadmap).
+- Analytics has a schema and beacon shape but no ingest endpoint.
+- Playback restrictions (referrer and user-agent allowlists) exist as a table only.
+- The media queue and the agent queue are separate systems; consolidating them is a real
+  design question, not a refactor.

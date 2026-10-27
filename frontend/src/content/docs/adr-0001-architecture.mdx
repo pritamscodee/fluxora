@@ -1,0 +1,78 @@
+---
+title: 'ADR-0001: Core architecture'
+description: The founding decisions — process separation, Postgres as a queue, idempotency, private storage, playback indirection, split auth, and agent authority.
+section: Project
+order: 4
+accent: violet
+---
+
+import Callout from '@/components/docs/Callout.astro';
+
+**Status** accepted · **Date** 2026-10-27
+
+## Context
+
+Fluxora is an API-first video platform: upload, transcode, adaptive playback, with
+webhooks, analytics and agentic automation. Transcoding is minutes-long and CPU-bound; the
+API must stay responsive and the whole pipeline must survive worker death.
+
+## Decisions
+
+### 1. Separate the API process from the worker process
+
+FastAPI handles only fast I/O. Every ffmpeg invocation runs in a worker polling a Postgres
+`jobs` table.
+
+### 2. Postgres as the queue, not Redis or Celery
+
+`SELECT … FOR UPDATE SKIP LOCKED` gives atomic claim semantics with no extra
+infrastructure, and the job row is the audit trail. Neon was already a hard dependency.
+Revisit if sustained throughput exceeds roughly 100 jobs per second.
+
+### 3. Jobs are idempotent and keyed
+
+Each job carries an `idempotency_key`. A handler rebuilds its output unconditionally and
+writes to a deterministic storage key, so a retry after a mid-flight crash overwrites
+partial output rather than appending a duplicate. Visibility timeout plus `attempts` plus
+exponential backoff; exhaustion marks the job `failed` and emits an `errored` webhook. An
+asset flips to `ready` only after verifying every expected object exists.
+
+### 4. Object storage is private; delivery is proxied
+
+Buckets are private. Delivery passes through the API so playback policy, signed-token
+audience and analytics beacons are enforced at one chokepoint. Segments carry long
+`Cache-Control` because their URLs are content-addressed and immutable; manifests carry
+short TTLs.
+
+### 5. Playback IDs are indirection on purpose
+
+Rotating or revoking access must not require a new asset id, and the asset id must never
+appear in a public URL.
+
+### 6. Two auth systems
+
+Dashboard users get HS256 JWTs; machines get HTTP Basic API keys scoped to one project.
+Keeping them disjoint means a leaked dashboard token cannot drive the ingest API, and an
+API key cannot read account billing.
+
+### 7. The agent proposes, the backend executes
+
+LangGraph plans; the model never emits shell commands. Every tool is an explicitly
+registered Python function with a Pydantic argument schema, and ffmpeg is always invoked
+as an argv list. Destructive or expensive tools are gated behind an interrupt requiring
+human approval before the graph resumes.
+
+## Consequences
+
+- Delivery traffic flows through our compute, so egress cost and horizontal scale land on
+  the API tier. Mitigated by a CDN in front of `/v1/stream/*` keyed on the signed URL.
+- Postgres-as-queue couples worker throughput to database connections; the worker holds
+  one connection per concurrency slot.
+- No just-in-time encoding: the full ladder is rendered up front, trading
+  time-to-first-play for a far simpler delivery path.
+
+<Callout kind="note">
+Decision 4's choice of Cloudflare R2 specifically was later generalised — see
+[ADR-0002](/docs/adr-0002-object-storage). The privacy and proxying properties are
+unchanged.
+</Callout>

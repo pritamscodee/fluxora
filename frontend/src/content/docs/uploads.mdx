@@ -1,0 +1,199 @@
+---
+title: Uploads and ingest
+description: Presigned direct uploads, pull ingest, and why the client is never trusted to report success.
+section: Core concepts
+order: 1
+accent: cyan
+---
+
+import Callout from '@/components/docs/Callout.astro';
+import Mermaid from '@/components/Mermaid.astro';
+import Endpoint from '@/components/docs/Endpoint.astro';
+
+There are two ways in: a **direct upload**, where the client PUTs bytes straight to object
+storage, and **pull ingest**, where you hand over a URL and Fluxora fetches it.
+
+## Direct uploads
+
+<Endpoint method="POST" path="/v1/video/uploads" auth="api-key" />
+
+```json
+{
+  "timeout": 3600,
+  "cors_origin": "https://app.example.com",
+  "new_asset_settings": {
+    "playback_policy": ["public"],
+    "mp4_support": "standard",
+    "normalize_audio": true
+  }
+}
+```
+
+The response carries a one-time presigned PUT URL:
+
+```json
+{
+  "data": {
+    "id": "7xK2mR...",
+    "status": "waiting",
+    "url": "https://storage.example.com/fluxora/projects/.../source?X-Amz-Signature=...",
+    "timeout": 3600,
+    "test": false
+  }
+}
+```
+
+The client PUTs raw bytes to that URL. Those bytes never pass through the API, which is
+the entire point — a 4 GB upload does not occupy an API worker for its duration.
+
+<Mermaid
+  caption="The dotted line is the one that matters: media bytes bypass the API completely."
+  chart={`sequenceDiagram
+  autonumber
+  participant C as Client
+  participant A as API
+  participant S as Object storage
+
+  C->>A: POST /v1/video/uploads
+  A->>A: create row, derive object key
+  A->>S: presign PUT (expires at timeout)
+  A-->>C: {id, url, status: waiting}
+  Note over C,S: bytes go direct
+  C-->>S: PUT video.mp4
+  C->>A: GET /v1/video/uploads/{id}
+  A->>S: HEAD object
+  S-->>A: 200, content-length
+  A->>A: create asset, queue transcode
+  A-->>C: {status: asset_created, asset_id}`}
+/>
+
+### `Content-Type` is deliberately not signed
+
+Including it in the signature forces the client to reproduce the header byte-for-byte, and
+browsers do not do that reliably. The mismatch surfaces as an opaque 403 at upload time —
+a genuinely miserable thing to debug — so the signature covers bucket and key only.
+
+## Reconciliation, not notification
+
+The client is never trusted to tell us an upload succeeded.
+
+Three independent things can promote a waiting upload:
+
+1. **A `GET` on the upload.** Polling is the natural client behaviour, so it is also the
+   trigger. No separate call needed.
+2. **`PUT /v1/video/uploads/{id}/complete`.** An explicit fast-path hint. Purely an
+   optimisation.
+3. **The reaper.** A maintenance job that sweeps waiting uploads every minute, checks
+   storage, and promotes or times them out.
+
+<Callout kind="decision" title="Why reconcile at all">
+A client that crashes after its PUT completes but before it calls back would otherwise
+leave a paid-for object in storage attached to an upload stuck on `waiting` forever. By
+making storage the source of truth, every path converges on the same answer regardless of
+what the client did or failed to do.
+</Callout>
+
+All three run the same idempotent `reconcile` function, so they cannot race into creating
+two assets.
+
+## Upload states
+
+<Mermaid
+  chart={`stateDiagram-v2
+  [*] --> waiting: created
+  waiting --> asset_created: object landed
+  waiting --> cancelled: PUT /cancel
+  waiting --> timed_out: timeout elapsed, nothing arrived
+  waiting --> errored: object is empty
+  asset_created --> [*]
+  cancelled --> [*]
+  timed_out --> [*]
+  errored --> [*]`}
+/>
+
+Every state but `waiting` is terminal. A cancelled upload stays cancelled even if bytes
+arrive afterwards — tested explicitly, because "cancel then the PUT lands anyway" is a
+real race.
+
+Once an upload leaves `waiting`, the `url` field reads `null`. A presigned PUT is a write
+capability, and a spent one is not handed back.
+
+<Endpoint method="GET" path="/v1/video/uploads/{id}" auth="api-key">
+  Also reconciles, if the upload is still waiting.
+</Endpoint>
+<Endpoint method="PUT" path="/v1/video/uploads/{id}/cancel" auth="api-key" />
+<Endpoint method="PUT" path="/v1/video/uploads/{id}/complete" auth="api-key" />
+<Endpoint method="GET" path="/v1/video/uploads" auth="api-key" />
+
+## Pull ingest
+
+When the file is already on the web:
+
+<Endpoint method="POST" path="/v1/video/assets" auth="api-key" />
+
+```json
+{
+  "input": [
+    { "url": "https://example.com/video.mp4" },
+    {
+      "url": "https://example.com/captions.en.vtt",
+      "type": "text",
+      "text_type": "subtitles",
+      "language_code": "en",
+      "closed_captions": true
+    }
+  ],
+  "playback_policy": ["public"],
+  "normalize_audio": true
+}
+```
+
+`input` must contain exactly one `video` entry — validated in the schema, so two video
+URLs is a 422 with a message saying so rather than a confusing partial result.
+
+The source is copied into our own storage **before** anything else happens, so a retry
+does not depend on a third-party URL still being up, and ingest is capped at 10 GB,
+enforced both from `Content-Length` and while streaming (a lying header should not be able
+to fill the disk).
+
+### Trimming on ingest
+
+A video input accepts `start_time` and `end_time`, so you can ingest a portion of a longer
+source without a separate clip step.
+
+## Test assets
+
+```json
+{ "test": true }
+```
+
+Test assets are capped at ten seconds. Useful for wiring up an integration without paying
+for a full transcode each time.
+
+## Events
+
+| Event | When |
+| --- | --- |
+| `video.upload.created` | The upload URL was issued. |
+| `video.upload.asset_created` | The object landed and became an asset. |
+| `video.upload.cancelled` | Cancelled before anything arrived. |
+| `video.upload.errored` | Timed out, or the object was empty. |
+
+## Storage layout
+
+```
+projects/{project_id}/
+  uploads/{upload_id}/source
+  assets/{asset_id}/
+    hls/master.m3u8
+    hls/720p_playlist.m3u8
+    hls/720p_init.mp4
+    hls/720p_segment_00000.m4s
+    mp4/medium.mp4
+    thumbs/{hash}.jpg
+    text/{track_id}.vtt
+    storyboard.jpg
+```
+
+Every key is derived deterministically from ids, which is what makes a retried job
+overwrite its own partial output instead of accumulating duplicates.

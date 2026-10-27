@@ -1,0 +1,177 @@
+---
+title: Deployment
+description: Running the four processes in production, scaling each one, and what to watch.
+section: Operations
+order: 2
+accent: cyan
+---
+
+import Callout from '@/components/docs/Callout.astro';
+import Mermaid from '@/components/Mermaid.astro';
+
+## Topology
+
+<Mermaid
+  caption="Each tier scales on a different signal. They share state only through Postgres, object storage and Redis."
+  chart={`flowchart TB
+  CDN["CDN<br/><small>caches /v1/stream/*</small>"] --> LB["Load balancer"]
+  LB --> A1["API"]
+  LB --> A2["API"]
+  A1 & A2 --> PG[("Postgres")]
+  A1 & A2 --> OS[("Object storage")]
+  A1 & A2 --> RD[("Redis")]
+  MW1["Media worker"] --> PG
+  MW1 --> OS
+  MW2["Media worker"] --> PG
+  MW2 --> OS
+  AW["Agent tool worker"] --> RD
+  AW --> PG
+  DOCS["Docs (static)"] --> CDN`}
+/>
+
+| Process | Command | Scales on |
+| --- | --- | --- |
+| API | `uvicorn app.main:app` | Request rate, delivery bandwidth |
+| Media worker | `python -m app.workers.runner` | Transcode backlog |
+| Agent tool worker | `python -m app.workers.agent_worker` | Agent usage |
+| Docs | Static output from `astro build` | Nothing |
+
+## Sizing
+
+**API.** I/O-bound. Its real constraint is delivery bandwidth, which a CDN in front of
+`/v1/stream/*` removes almost entirely.
+
+**Media worker.** CPU-bound. `WORKER_CONCURRENCY` should be roughly the core count divided
+by two — libx264 is already multi-threaded, so oversubscribing makes everything slower.
+Needs scratch disk of about 3× the largest source per concurrent job.
+
+**Agent tool worker.** I/O-bound, cheap. One instance with `AGENT_TOOL_CONCURRENCY=4`
+handles a lot.
+
+## Database
+
+Use Neon's **pooled** connection string. The engine keeps `pool_size=5`,
+`max_overflow=10`, `pool_pre_ping=True` and `pool_recycle=280` — the recycle is deliberately
+inside Neon's idle cut-off, so a connection is replaced before the server drops it.
+
+Each worker concurrency slot holds a connection; budget accordingly.
+
+### Migrations
+
+```bash
+alembic upgrade head
+```
+
+Run as a release step before new code starts. The initial migration was generated against
+Postgres specifically, so server defaults are `now()` rather than SQLite's
+`(CURRENT_TIMESTAMP)`.
+
+<Callout kind="warning" title="Do not rely on create_all">
+The API self-creates its schema only on SQLite. On Postgres, Alembic is the only path, so
+a forgotten migration is a visible failure rather than a silently divergent schema.
+</Callout>
+
+## Object storage
+
+Any S3-compatible store. For Cloudflare R2:
+
+```bash
+S3_ENDPOINT=https://<account_id>.r2.cloudflarestorage.com
+S3_REGION=auto
+```
+
+Keep the bucket **private**. Delivery is proxied so playback policy is enforced in one
+place; a public bucket silently bypasses all of it.
+
+Set `S3_PUBLIC_ENDPOINT` if the API and your clients reach storage at different hostnames
+— a presigned URL's signature covers the host, and a mismatch is an opaque 403 at upload
+time.
+
+## CDN
+
+Put one in front of `/v1/stream/*`, keyed on the **full URL including the query string**,
+so signed and unsigned requests cache separately and a token cannot be stripped by the
+cache key.
+
+The origin already sets the right headers: a year with `immutable` on segments, init
+segments, thumbnails and MP4s; sixty seconds on manifests.
+
+## Redis
+
+```
+--appendonly yes
+--maxmemory-policy noeviction
+--notify-keyspace-events Ex
+```
+
+`noeviction` is not optional: evicting a queue key silently drops in-flight jobs.
+
+## Health checks
+
+| Endpoint | Use |
+| --- | --- |
+| `/health` | Liveness. Always 200 if the process is up. |
+| `/healthz` | Readiness. Executes `SELECT 1`, so it fails when the database is unreachable. |
+
+Point rolling deploys at `/healthz` so a new instance does not take traffic before it can
+reach its database.
+
+Workers have no HTTP surface; monitor them on job throughput and queue depth.
+
+## Graceful shutdown
+
+Both workers handle `SIGTERM`: stop claiming, cancel in-flight work, and defer cancelled
+jobs by five seconds rather than leaving them to time out. Give containers a termination
+grace period of at least 30 seconds.
+
+## Secrets
+
+- `JWT_SECRET` — `openssl rand -hex 32`. Rotating it invalidates every session.
+- `S3_SECRET_ACCESS_KEY` — scope the credential to one bucket.
+- `OPENAI_API_KEY` — only the API process needs it.
+- Playback signing keys live in the database; the private key is returned once at creation
+  and never again.
+
+## Scaling notes
+
+**Transcode backlog.** Watch `jobs` where `status = 'queued'` and `type = 'asset.transcode'`.
+Add worker instances; they coordinate through `SKIP LOCKED` with no extra configuration.
+
+**Delivery bandwidth.** If the API tier is saturating on `/v1/stream/*`, the CDN is either
+missing or its cache key is wrong.
+
+**Database connections.** `WORKER_CONCURRENCY × worker count + API pool` must fit inside
+the pooler's limit.
+
+**Dead letters.** A growing dead-letter queue means a tool is failing deterministically.
+Inspect it via the API; it keeps the payload and error.
+
+## A minimal compose production stack
+
+```yaml
+services:
+  api:
+    build: ./backend
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+    env_file: .env
+    ports: ["8000:8000"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+
+  media-worker:
+    build: ./backend
+    command: python -m app.workers.runner
+    env_file: .env
+    deploy: { replicas: 2 }
+
+  agent-worker:
+    build: ./backend
+    command: python -m app.workers.agent_worker
+    env_file: .env
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --maxmemory-policy noeviction
+```
+
+The docs site is static output; deploy `frontend/dist` to any static host.

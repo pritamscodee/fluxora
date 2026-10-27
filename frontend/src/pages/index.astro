@@ -1,0 +1,266 @@
+---
+import BaseLayout from '@/layouts/BaseLayout.astro';
+import Header from '@/components/Header.astro';
+import Mermaid from '@/components/Mermaid.astro';
+import Stat from '@/components/docs/Stat.astro';
+import {
+  RiUploadCloud2Line,
+  RiMovie2Line,
+  RiPlayCircleLine,
+  RiRobot2Line,
+  RiShieldKeyholeLine,
+  RiPulseLine,
+  RiArrowRightLine,
+} from 'react-icons/ri';
+
+// Built here rather than inline: Astro parses `{` in markup as an expression, and this
+// sample is mostly JSON.
+const dim = (s: string) => `<span class="text-[#8a8574]">${s}</span>`;
+const prompt = '<span class="text-[#b8f84a]">$</span>';
+const out = (s: string) => `<span class="text-[#6ee7f9]">${s}</span>`;
+
+const terminal = [
+  dim('# ask for an upload URL'),
+  `${prompt} curl -u $KEY:$SECRET -X POST \\`,
+  '    localhost:8000/v1/video/uploads',
+  '',
+  out('{"data":{"id":"7xK2…","status":"waiting",'),
+  out('  "url":"https://…/source?X-Amz-Signature=…"}}'),
+  '',
+  dim('# PUT the file straight to storage'),
+  `${prompt} curl -T video.mp4 "$UPLOAD_URL"`,
+  '',
+  dim('# a few seconds later'),
+  out('{"status":"ready","duration":126.4,'),
+  out('  "aspect_ratio":"16:9","playback_ids":[…]}'),
+  '',
+  `${prompt} open /v1/stream/$PLAYBACK_ID.m3u8`,
+  '<span class="text-[#ffd803]">▸ 4 renditions · 270p → 1080p</span>',
+].join('\n');
+
+const pillars = [
+  {
+    icon: RiUploadCloud2Line,
+    accent: 'cyan',
+    title: 'Direct uploads',
+    body: 'Presigned PUT straight to object storage. Bytes never pass through the API, and an upload reconciles even if the client disappears mid-flight.',
+    href: '/docs/uploads',
+  },
+  {
+    icon: RiMovie2Line,
+    accent: 'lime',
+    title: 'FFmpeg pipeline',
+    body: 'One decode pass produces the whole adaptive ladder, plus thumbnails, progressive MP4s, storyboards and frame-accurate clips.',
+    href: '/docs/transcoding',
+  },
+  {
+    icon: RiPlayCircleLine,
+    accent: 'yellow',
+    title: 'Adaptive playback',
+    body: 'fMP4 HLS behind opaque playback IDs, with signed tokens whose audience pins them to video, thumbnail, GIF or storyboard.',
+    href: '/docs/playback',
+  },
+  {
+    icon: RiPulseLine,
+    accent: 'orange',
+    title: 'Webhooks and events',
+    body: 'An append-only event log, HMAC-signed delivery, exponential retries and honest replay that re-sends the original bytes.',
+    href: '/docs/webhooks',
+  },
+  {
+    icon: RiRobot2Line,
+    accent: 'violet',
+    title: 'Agentic workflows',
+    body: 'LangGraph plans, a human approves anything expensive or destructive, and every tool call runs as a retried BullMQ job.',
+    href: '/docs/agent-overview',
+  },
+  {
+    icon: RiShieldKeyholeLine,
+    accent: 'pink',
+    title: 'Guardrails',
+    body: 'Guardrails AI screens language; deterministic policy screens structure. The model never emits code, and ffmpeg never sees a shell.',
+    href: '/docs/guardrails',
+  },
+];
+---
+
+<BaseLayout
+  title="Fluxora"
+  description="Agentic video infrastructure: direct uploads, FFmpeg transcoding to adaptive HLS, signed playback, webhooks, and a guard-railed agent that operates all of it."
+>
+  <Header />
+
+  <!-- Hero -->
+  <section class="border-b-[3px] border-[var(--brutal-ink)]">
+    <div class="mx-auto max-w-[1500px] px-5 py-16 lg:py-24">
+      <div class="grid items-center gap-12 lg:grid-cols-[1.1fr_1fr]">
+        <div>
+          <span class="brutal-tag bg-[var(--brutal-lime)] text-[#0b0b0b]">
+            Open source · API first
+          </span>
+          <!-- Fluid rather than stepped: "INFRASTRUCTURE" is a long word, and at fixed
+               breakpoint sizes it overflows between breakpoints instead of at them. -->
+          <h1 class="mt-5 text-[clamp(2.25rem,6.2vw,4.5rem)] leading-[0.95]">
+            VIDEO<br />
+            INFRASTRUCTURE<br />
+            <span
+              class="inline-block border-[3px] border-[var(--brutal-ink)] bg-[var(--brutal-yellow)] px-3 text-[#0b0b0b]"
+              style="box-shadow: var(--shadow-brutal-lg)"
+            >
+              THAT THINKS
+            </span>
+          </h1>
+          <p class="mt-7 max-w-xl text-lg font-medium leading-relaxed">
+            Upload a file, get an adaptive HLS stream. Then ask an agent to clip it,
+            caption it or publish it — and have it stop and check before it spends your
+            money or deletes your work.
+          </p>
+          <div class="mt-9 flex flex-wrap gap-4">
+            <a
+              href="/docs/introduction"
+              class="brutal brutal-press inline-flex items-center gap-2 bg-[var(--brutal-yellow)] px-6 py-3 font-[family-name:var(--font-heading)] text-base uppercase text-[#0b0b0b]"
+            >
+              Read the docs <RiArrowRightLine size={18} />
+            </a>
+            <a
+              href="/docs/quickstart"
+              class="brutal brutal-press inline-flex items-center gap-2 bg-card px-6 py-3 font-[family-name:var(--font-heading)] text-base uppercase"
+            >
+              Quickstart
+            </a>
+          </div>
+        </div>
+
+        <div class="brutal-lg bg-[#0b0b0b] p-5 font-mono text-[12.5px] leading-6 text-[#e6e1d5]">
+          <div class="mb-3 flex gap-1.5">
+            <span class="size-3 border-2 border-[#e6e1d5] bg-[#ff5b5b]"></span>
+            <span class="size-3 border-2 border-[#e6e1d5] bg-[#ffd803]"></span>
+            <span class="size-3 border-2 border-[#e6e1d5] bg-[#b8f84a]"></span>
+          </div>
+          <pre class="overflow-x-auto whitespace-pre" set:html={terminal} />
+        </div>
+      </div>
+
+      <div class="mt-14 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <Stat value="57" label="Tests, two storage backends" accent="lime" />
+        <Stat value="43" label="API endpoints" accent="cyan" />
+        <Stat value="11" label="Job types, all idempotent" accent="pink" />
+        <Stat value="5" label="Tool retries, then dead-letter" accent="orange" />
+      </div>
+    </div>
+  </section>
+
+  <!-- Pipeline -->
+  <section class="border-b-[3px] border-[var(--brutal-ink)] bg-card">
+    <div class="mx-auto max-w-[1500px] px-5 py-16">
+      <h2 class="text-3xl uppercase sm:text-4xl">From bytes to playback</h2>
+      <p class="mt-3 max-w-2xl font-medium text-muted-foreground">
+        Every upload walks the same path. The API only ever creates rows and queues work;
+        anything slow happens in a worker that can die and be restarted without losing it.
+      </p>
+
+      <Mermaid
+        caption="The upload-to-playback path. The API stays responsive because it never blocks on ffmpeg."
+        chart={`flowchart LR
+  C["Client"] -->|"1 request URL"| A["API"]
+  A -->|"2 presigned PUT"| S[("Object storage")]
+  C -->|"3 upload bytes"| S
+  A -->|"4 queue job"| Q[("jobs table")]
+  W["Media worker"] -->|"5 claim"| Q
+  W -->|"6 probe + ABR ladder"| F["FFmpeg"]
+  F -->|"7 HLS, MP4, thumbs"| S
+  W -->|"8 asset ready"| E["Event log"]
+  E -->|"9 signed webhook"| C
+  C -->|"10 play"| A
+  A -->|"manifest + segments"| S`}
+      />
+    </div>
+  </section>
+
+  <!-- Pillars -->
+  <section class="mx-auto max-w-[1500px] px-5 py-16">
+    <h2 class="text-3xl uppercase sm:text-4xl">What is in the box</h2>
+    <div class="mt-8 grid gap-5 md:grid-cols-2 lg:grid-cols-3">
+      {
+        pillars.map((pillar) => (
+          <a href={pillar.href} class="brutal brutal-press flex flex-col bg-card p-5">
+            <span
+              class="brutal-sm mb-4 flex size-11 items-center justify-center text-[#0b0b0b]"
+              style={`background:var(--brutal-${pillar.accent})`}
+            >
+              <pillar.icon size={22} />
+            </span>
+            <h3 class="font-[family-name:var(--font-heading)] text-xl leading-tight">
+              {pillar.title}
+            </h3>
+            <p class="mt-2 flex-1 text-sm leading-6 text-muted-foreground">{pillar.body}</p>
+            <span class="mt-4 inline-flex items-center gap-1 text-xs font-extrabold uppercase tracking-widest">
+              Read more <RiArrowRightLine size={13} />
+            </span>
+          </a>
+        ))
+      }
+    </div>
+  </section>
+
+  <!-- Agent -->
+  <section class="border-y-[3px] border-[var(--brutal-ink)] bg-[var(--brutal-violet)] text-[#0b0b0b]">
+    <div class="mx-auto max-w-[1500px] px-5 py-16">
+      <span class="brutal-tag bg-white">The agent</span>
+      <h2 class="mt-4 text-3xl uppercase sm:text-4xl">
+        It asks before it spends or deletes
+      </h2>
+      <p class="mt-3 max-w-2xl font-medium">
+        The planner proposes; the backend decides. A plan is rejected outright unless every
+        step names a registered tool and satisfies that tool's schema — and anything
+        expensive or irreversible parks until a human says yes.
+      </p>
+
+      <Mermaid
+        caption="Approval is a gate in the graph, not a prompt instruction, so a model that ignores its instructions still cannot act."
+        chart={`flowchart TD
+  P["User request"] --> G["Input guardrail<br/>injection · scope · length"]
+  G -->|blocked| X["Refused<br/>model never called"]
+  G -->|allowed| L["LangGraph planner<br/>OpenAI"]
+  L --> V["Policy check<br/>tool allowlist · schema · caps"]
+  V -->|invalid| X
+  V -->|read only| R["Run now"]
+  V -->|expensive or destructive| H["Await human approval"]
+  H -->|approved| R
+  H -->|rejected| N["Nothing happens"]
+  R --> B[("BullMQ / Redis")]
+  B --> T["Tool worker<br/>5 attempts"]
+  T -->|exhausted| D[("Dead-letter queue")]
+  T -->|success| O["Output guardrail<br/>no secret leakage"]
+  O --> A["Answer"]`}
+      />
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="mx-auto max-w-[1500px] px-5 py-20 text-center">
+    <h2 class="text-4xl uppercase sm:text-5xl">Start here</h2>
+    <p class="mx-auto mt-4 max-w-xl font-medium text-muted-foreground">
+      Three containers, four processes, one command each. The quickstart has you playing
+      video in about ten minutes.
+    </p>
+    <a
+      href="/docs/quickstart"
+      class="brutal brutal-press mt-8 inline-flex items-center gap-2 bg-[var(--brutal-lime)] px-8 py-4 font-[family-name:var(--font-heading)] text-lg uppercase text-[#0b0b0b]"
+    >
+      Quickstart <RiArrowRightLine size={20} />
+    </a>
+  </section>
+
+  <footer class="border-t-[3px] border-[var(--brutal-ink)] bg-card">
+    <div
+      class="mx-auto flex max-w-[1500px] flex-wrap items-center gap-3 px-5 py-6 text-xs font-semibold uppercase tracking-wider"
+    >
+      <span>Fluxora</span>
+      <span class="text-muted-foreground">Agentic video infrastructure</span>
+      <span class="ml-auto text-muted-foreground">
+        Built with Astro, Tailwind and shadcn/ui
+      </span>
+    </div>
+  </footer>
+</BaseLayout>

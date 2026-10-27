@@ -1,0 +1,151 @@
+---
+title: Observability
+description: OpenTelemetry traces, LangSmith, the event log, and what to look at when something is wrong.
+section: Operations
+order: 3
+accent: violet
+---
+
+import Callout from '@/components/docs/Callout.astro';
+
+## OpenTelemetry
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318
+OTEL_SERVICE_NAME=fluxora-api
+```
+
+FastAPI and SQLAlchemy are instrumented automatically. With no endpoint configured, the
+provider is still set up in-process but exports nothing — so running without a collector
+is normal rather than an error.
+
+Set `OTEL_SERVICE_NAME` per process (`fluxora-api`, `fluxora-worker`,
+`fluxora-agent-worker`) so traces are attributable.
+
+`/health` and `/healthz` are excluded from tracing. Probe traffic is constant and would
+otherwise dominate every sample.
+
+<Callout kind="warning" title="Instrument at construction, not in lifespan">
+`FastAPIInstrumentor` installs middleware, and Starlette refuses new middleware once
+startup has begun. Doing this inside the lifespan hook raises `Cannot add middleware after
+an application has started` and the process never boots — while every in-process test
+still passes, because the test client does not run a real startup sequence.
+</Callout>
+
+## Structured logs
+
+```
+2026-10-27 12:21:32 INFO    fluxora.runner: job YdPdew… asset.transcode attempt 1/3
+2026-10-27 12:21:35 INFO    fluxora.runner: job YdPdew… asset.transcode done: {'renditions': ['270p','360p','480p','720p'], 'duration': 126.4}
+2026-10-27 12:21:40 INFO    fluxora.events: emitted video.asset.ready for asset Qdh4pm…
+```
+
+Useful logger names:
+
+| Logger | Covers |
+| --- | --- |
+| `fluxora.runner` | Job claims, outcomes, retries |
+| `fluxora.worker` | Handler internals |
+| `fluxora.events` | Event emission |
+| `fluxora.media` | ffmpeg invocations |
+| `fluxora.storage` | Backend selection |
+| `fluxora.agents.*` | Planning, guardrails, queue |
+
+## The event log
+
+The most useful operational surface is the one built for customers:
+
+```bash
+curl -H "authorization: Bearer $TOKEN" \
+  "localhost:8000/v1/projects/$PROJECT/events?object_id=$ASSET_ID"
+```
+
+Every state change for an object, in order, with payloads. "Why is this asset stuck" is
+usually answered here before anyone opens a trace.
+
+Webhook deliveries record their own attempt history — response codes, errors, next
+scheduled attempt:
+
+```bash
+curl -H "authorization: Bearer $TOKEN" \
+  "localhost:8000/v1/projects/$PROJECT/webhooks/$WEBHOOK/deliveries"
+```
+
+## Queue health
+
+```bash
+curl -H "authorization: Bearer $TOKEN" localhost:8000/v1/projects/$PROJECT/agent/queue
+```
+
+```json
+{ "data": { "redis": "ok", "queue": "fluxora-agent-tools", "dead_letters": 0 } }
+```
+
+A non-zero and growing `dead_letters` means a tool is failing deterministically.
+
+For the media queue, query the table directly:
+
+```sql
+SELECT type, status, count(*), max(attempts)
+  FROM jobs GROUP BY type, status ORDER BY 3 DESC;
+```
+
+## LangSmith
+
+```bash
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=lsv2_...
+LANGSMITH_PROJECT=fluxora
+```
+
+Planner and responder calls are traced and tagged with the run id, so a trace can be tied
+back to an `agent_runs` row and the observations it produced. The row stores a
+`trace_url`.
+
+Tracing is explicitly disabled when no key is set, because a stale `LANGSMITH_TRACING` in
+the environment makes every run attempt to reach the API and stall on network timeouts.
+
+## Usage metering
+
+Rolled up daily into `usage_records`:
+
+| Metric | Meaning |
+| --- | --- |
+| `encoding_minutes` | Source duration transcoded |
+| `storage_gb_hours` | Retained source bytes over time |
+
+```sql
+SELECT day, metric, value FROM usage_records
+ WHERE project_id = :project ORDER BY day DESC LIMIT 30;
+```
+
+## What to alert on
+
+| Signal | Why |
+| --- | --- |
+| `jobs` queued for `asset.transcode` rising steadily | Workers are down or undersized |
+| Jobs with `status = 'failed'` | Transcodes are failing; check `error` |
+| Dead-letter count rising | A tool is deterministically broken |
+| `webhook_deliveries` with `status = 'exhausted'` | A customer endpoint is down |
+| `/healthz` failing | Database unreachable |
+| Uploads stuck on `waiting` past timeout | The reaper is not running |
+
+## A worked example
+
+> *"The asset never became ready."*
+
+1. `GET /v1/video/assets/{id}` — if `status` is `errored`, `errors.messages` carries the
+   tail of ffmpeg's stderr, which is usually the whole answer.
+2. If it is still `preparing`, check the event log: did `video.asset.created` fire?
+3. Query `jobs` for that asset id. Queued means no worker claimed it. Running with an old
+   `locked_at` means a worker died and the lease has not expired yet. Failed means
+   `attempts` ran out and `error` says why.
+4. Check the worker log for that job id.
+
+> *"The agent did nothing."*
+
+1. `GET /agent/runs/{id}` — `blocked` means a guardrail refused it and `error` says which.
+2. `awaiting_approval` means it is waiting for a human; the plan is attached.
+3. `completed` with failing observations means a tool failed; each observation carries its
+   `job_id` and error.
+4. Check the dead-letter queue for that job id.

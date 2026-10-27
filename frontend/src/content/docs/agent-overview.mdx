@@ -1,0 +1,215 @@
+---
+title: Agent overview
+description: How a sentence becomes a plan, how approval works, and why the model cannot do anything it was not explicitly allowed to.
+section: The agent
+order: 1
+accent: violet
+---
+
+import Callout from '@/components/docs/Callout.astro';
+import Mermaid from '@/components/Mermaid.astro';
+import Endpoint from '@/components/docs/Endpoint.astro';
+
+The agent turns *"clip the first ten seconds of my newest video"* into tool calls and runs
+them. It is built so that a model which ignores every instruction it was given still
+cannot do real damage.
+
+## The graph
+
+<Mermaid
+  caption="LangGraph. Every edge out of the policy node is a decision made in code, not by the model."
+  chart={`flowchart TD
+  S(["Request"]) --> E{"entry"}
+  E -->|new run| G["guard_input<br/><small>injection · scope · length</small>"]
+  E -->|approved resume| X
+  G -->|blocked| B1(["Refused<br/>model never called"])
+  G -->|allowed| P["plan<br/><small>LLM, structured output</small>"]
+  P -->|no plan possible| C1(["Explain why"])
+  P --> V["policy<br/><small>allowlist · schemas · caps</small>"]
+  V -->|invalid| B2(["Rejected"])
+  V -->|read-only| X["execute<br/><small>dispatch via BullMQ</small>"]
+  V -->|high risk| H(["awaiting_approval"])
+  X --> R["respond<br/><small>summarise</small>"]
+  R --> O["output guardrail"]
+  O --> D(["Answer"])`}
+/>
+
+A run that needs approval is invoked twice: once to plan, once to execute. In between it
+lives in the database as `awaiting_approval`.
+
+<Callout kind="decision" title="Why a database row, not a LangGraph checkpoint">
+Approval can arrive minutes later, against a different API process, after a deploy. An
+in-memory checkpointer would not be there. The `agent_runs` row already has to exist for
+audit purposes, so it is the resumption point too.
+</Callout>
+
+## Planning
+
+The planner is asked for structured output — a list of steps, each naming a tool and
+carrying its arguments as a JSON string:
+
+```python
+class PlanStep(BaseModel):
+    tool: str
+    args_json: str = "{}"
+    why: str
+
+class Plan(BaseModel):
+    reasoning: str
+    steps: list[PlanStep]
+```
+
+<Callout kind="note" title="Why args are a JSON string">
+OpenAI's strict structured-output mode rejects open-ended objects, so `args: dict` is not
+expressible. A string that is parsed and then validated against the tool's real Pydantic
+schema is both compatible and stricter — there is exactly one validation path, and it is
+the same one the HTTP API uses.
+</Callout>
+
+The system prompt lists every available tool with its JSON schema and risk level, and
+tells the planner to read before writing, keep plans minimal, and never plan a deletion
+that was not asked for. These are useful defaults — but none of them are load-bearing.
+What is load-bearing comes next.
+
+## Policy, which is not advisory
+
+Before anything runs, the plan is checked in plain Python:
+
+```python
+for index, step in enumerate(plan, start=1):
+    if step["tool"] not in REGISTRY:
+        reject(f"step {index} names an unknown tool")
+    validate_args(step["tool"], step["args"])          # the tool's own schema
+    if REGISTRY[step["tool"]].risk.needs_approval:
+        requires_approval = True
+```
+
+Four things are enforced here, none of which depend on the model cooperating:
+
+1. **Allowlist.** A tool not in the registry does not exist.
+2. **Schemas.** Arguments must satisfy the tool's Pydantic model — the same model the
+   public API validates against.
+3. **Caps.** At most 8 plan steps and 12 tool calls per run; 60 runs per project per hour.
+4. **Risk gating.** Any expensive or destructive step forces the whole run to approval.
+
+## Risk levels
+
+| Risk | Meaning | Approval | Tools |
+| --- | --- | --- | --- |
+| `read` | Reads data | Auto | `list_assets`, `get_asset`, `generate_thumbnail`, `project_usage` |
+| `write` | Changes metadata, cheap to undo | Auto | `save_asset_summary`, `add_playback_id` |
+| `expensive` | Costs real CPU and money | **Required** | `create_clip`, `enable_mp4_downloads`, `generate_captions` |
+| `destructive` | Cannot be undone | **Required** | `delete_asset` |
+
+A test asserts that every tool at `expensive` or `destructive` actually reports
+`needs_approval`, so a newly added tool cannot quietly land as auto-approved.
+
+## Approval
+
+<Mermaid
+  caption="Nothing has happened when a run parks. Approving re-screens the stored plan before executing it."
+  chart={`sequenceDiagram
+  autonumber
+  participant U as User
+  participant A as API
+  participant G as Graph
+  participant DB as Database
+
+  U->>A: POST /agent/runs "delete my test video"
+  A->>G: plan phase
+  G->>G: guardrails, plan, policy
+  G-->>A: awaiting_approval + plan
+  A->>DB: persist plan, status
+  A-->>U: "This will delete asset X. Approve?"
+  Note over DB: nothing has run
+  U->>A: POST /runs/{id}/approve {approved: true}
+  A->>G: execute phase (plan from DB)
+  G->>G: re-screen the stored plan
+  G->>G: dispatch via BullMQ
+  G-->>A: observations + answer
+  A->>DB: persist steps and result`}
+/>
+
+The resume path **re-screens the stored plan**. Approval authorises one specific plan, so
+it must not be possible to swap a different one in afterwards — a test covers exactly
+that, by resuming with a plan containing an unregistered tool and asserting it is blocked.
+
+## Execution
+
+Steps run in order. Each one is dispatched as a [BullMQ job](/docs/task-queue) rather than
+called inline, so retries, dead-lettering and process isolation apply uniformly.
+
+Execution stops at the first failure. Later steps almost always depend on earlier ones, so
+pressing on would compound a single bad result into several.
+
+Every observation records what happened:
+
+```json
+{
+  "step": 1,
+  "tool": "create_clip",
+  "risk": "expensive",
+  "job_id": "run-abc-1-3f2a9b01",
+  "attempts": 1,
+  "ok": true,
+  "output": { "clip_asset_id": "Nm8KpQ...", "status": "preparing" }
+}
+```
+
+## Responding
+
+The model is asked to summarise the observations factually, then the answer passes the
+output guardrail. If the responder call fails, a mechanical summary is produced from the
+observations instead — the work already happened, and failing to narrate it must not lose
+the result.
+
+## Tenant scoping
+
+Every tool resolves its asset through the project on the **run**, never a project id from
+model output:
+
+```python
+async def _asset(ctx: ToolContext, asset_id: str) -> Asset:
+    return await asset_service.get_for_project(ctx.db, ctx.project.id, asset_id)
+```
+
+A model told to fetch another tenant's asset produces a tool call that simply does not
+resolve. Tested directly.
+
+## Using it
+
+<Endpoint method="POST" path="/v1/projects/{id}/agent/runs" auth="dashboard" />
+
+```json
+{ "prompt": "clip the first 10 seconds of my newest video" }
+```
+
+A read-only plan is carried straight through to execution and comes back completed. A
+risky plan comes back `awaiting_approval` with the plan attached.
+
+<Endpoint method="POST" path="/v1/projects/{id}/agent/runs/{run_id}/approve" auth="dashboard" />
+
+```json
+{ "approved": true }
+```
+
+<Endpoint method="GET" path="/v1/projects/{id}/agent/tools" auth="dashboard">
+  Every tool, its schema, its risk level, and the active limits.
+</Endpoint>
+
+## Tracing
+
+With `LANGSMITH_TRACING=true` and an API key, every planner and responder call is traced,
+tagged with the run id. The run row stores a `trace_url`.
+
+## What the model can never do
+
+- Emit code or shell commands. It emits a tool name and JSON.
+- Call a tool that is not registered.
+- Pass arguments that fail the tool's schema.
+- Touch another project's data.
+- Run an expensive or destructive tool without a human approving that specific plan.
+- Exceed the step, call or rate limits.
+
+ffmpeg is always invoked as an argv list, never through a shell — so even a parameter that
+somehow reached it cannot become an injection.

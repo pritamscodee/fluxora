@@ -1,0 +1,48 @@
+---
+import '@/styles/global.css';
+
+interface Props {
+  title: string;
+  description: string;
+}
+
+const { title, description } = Astro.props;
+const fullTitle = title === 'Fluxora' ? title : `${title} · Fluxora`;
+---
+
+<!doctype html>
+<html lang="en" class="scroll-smooth">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{fullTitle}</title>
+    <meta name="description" content={description} />
+    <meta property="og:title" content={fullTitle} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <script is:inline>
+      // Applied before first paint so the page never flashes the wrong theme.
+      (() => {
+        const stored = localStorage.getItem('fluxora-theme');
+        const dark =
+          stored === 'dark' ||
+          (!stored && window.matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.classList.toggle('dark', dark);
+      })();
+    </script>
+  </head>
+  <body class="min-h-dvh antialiased">
+    <slot />
+    <script is:inline>
+      document.addEventListener('click', (event) => {
+        const toggle = event.target.closest('[data-theme-toggle]');
+        if (!toggle) return;
+        const dark = document.documentElement.classList.toggle('dark');
+        localStorage.setItem('fluxora-theme', dark ? 'dark' : 'light');
+        // Mermaid re-reads its theme variables on this event.
+        window.dispatchEvent(new CustomEvent('fluxora:theme-change'));
+      });
+    </script>
+  </body>
+</html>

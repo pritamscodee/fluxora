@@ -1,0 +1,183 @@
+---
+title: Jobs and reliability
+description: The queue, idempotency, leases, backoff, and what happens when a worker dies mid-transcode.
+section: Core concepts
+order: 5
+accent: pink
+---
+
+import Callout from '@/components/docs/Callout.astro';
+import Mermaid from '@/components/Mermaid.astro';
+
+Transcoding takes minutes and can fail halfway. The reliability model exists so that any
+process can be killed at any moment without losing or duplicating work.
+
+## Postgres is the queue
+
+For the media pipeline, the queue is a table. Claiming a job is one statement:
+
+```sql
+WITH claimed AS (
+    SELECT id FROM jobs
+     WHERE ((status = 'queued' AND (run_after IS NULL OR run_after <= :now))
+            OR (status = 'running'
+                AND locked_at < :now - make_interval(secs => lease_seconds)))
+       AND attempts < max_attempts
+     ORDER BY priority ASC, created_at ASC
+     FOR UPDATE SKIP LOCKED
+     LIMIT 1
+)
+UPDATE jobs j
+   SET status = 'running', locked_at = :now, locked_by = :worker,
+       attempts = j.attempts + 1
+  FROM claimed WHERE j.id = claimed.id
+RETURNING j.id
+```
+
+`FOR UPDATE SKIP LOCKED` lets N workers pull disjoint rows with no coordinator. The job
+row doubles as the audit trail: what ran, when, how many attempts, what the error was.
+
+<Callout kind="decision" title="Why not Celery or Redis here">
+Postgres was already a hard dependency; adding a broker meant another thing to run, to
+monitor and to lose jobs in. The job row being queryable alongside the asset it belongs to
+has repeatedly been worth more than the throughput a dedicated broker would add. The
+honest limit is roughly 100 jobs/second, at which point this choice should be revisited.
+
+Redis did arrive later — for [agent tool dispatch](/docs/task-queue), where BullMQ's retry
+and dead-letter semantics are precisely the point.
+</Callout>
+
+## Leases, not locks
+
+A claimed job records `locked_at`, `locked_by` and `lease_seconds`. The claim query treats
+a `running` job whose lease has expired as claimable again.
+
+That single clause is what makes a killed worker a non-event. There is no heartbeat
+monitor and no reaper deciding a worker is dead; the next worker to look simply finds an
+expired lease and takes over.
+
+Long jobs extend their own lease as they progress:
+
+```python
+await jobs.heartbeat(db, job.id, progress=0.3)   # after loudness measurement
+await jobs.heartbeat(db, job.id, progress=0.8)   # after the ffmpeg pass
+```
+
+Without that, a 40-minute transcode under a one-hour lease is fine, but a 4K source is
+not — and a second worker would start duplicating it.
+
+## Idempotency
+
+Every job carries a unique `idempotency_key`. Enqueueing a duplicate returns `None`
+instead of raising:
+
+```python
+await jobs.enqueue(
+    db, jobs.RENDER_MP4, {"asset_id": asset.id, "mp4_support": level},
+    idempotency_key=f"mp4:{asset.id}:{level}",
+)
+```
+
+The key composition is load-bearing. Keying MP4 rendering on `mp4:{asset_id}` alone would
+mean switching from `standard` to `capped-1080p` is swallowed as a duplicate and silently
+does nothing. Including the level makes the second request real work.
+
+Handlers are then written so a retry converges:
+
+- Output goes to a **deterministic storage key**, so a retry overwrites a partial result
+  rather than creating a second copy.
+- Work is **re-derived, not resumed** — there is no half-finished state to reason about.
+- Readiness is **verified**, not assumed.
+
+<Mermaid
+  caption="A worker dies mid-transcode. The lease expires, another worker re-derives the same output to the same keys, and nothing downstream notices."
+  chart={`sequenceDiagram
+  autonumber
+  participant W1 as Worker A
+  participant J as jobs
+  participant S as Storage
+  participant W2 as Worker B
+
+  W1->>J: claim (lease 2h, attempt 1)
+  W1->>S: upload 270p, 360p
+  Note over W1: process killed
+  Note over J: lease expires
+  W2->>J: claim (attempt 2)
+  W2->>S: re-upload 270p, 360p (overwrite)
+  W2->>S: upload 480p, 720p
+  W2->>S: verify every object
+  W2->>J: succeeded`}
+/>
+
+## Failure and backoff
+
+A handler that raises gets retried with exponential backoff — 30s, 2m, 8m, 32m — until
+`max_attempts`, after which the job is `failed`. For an asset job that also means marking
+the asset `errored` and emitting `video.asset.errored`, so failure is visible rather than
+silent.
+
+Some failures are not worth retrying. A handler can raise a permanent error to skip
+straight to the end — an undecodable source will still be undecodable in thirty seconds.
+
+A handler can also ask for a **specific** delay rather than the generic backoff. Webhook
+delivery does this, because it follows a published retry schedule that receivers depend
+on.
+
+## Job types
+
+| Type | Purpose |
+| --- | --- |
+| `asset.ingest_url` | Fetch a remote source into storage, then transcode. |
+| `asset.transcode` | Probe, build the ABR ladder, package HLS. |
+| `asset.render_mp4` | Progressive MP4 renditions. |
+| `asset.render_storyboard` | Sprite sheet and WEBVTT. |
+| `asset.ingest_text_track` | Fetch a subtitle file and normalise it to WEBVTT. |
+| `asset.create_clip` | Cut a clip, then transcode it as a new asset. |
+| `asset.purge_storage` | Reclaim objects after deletion. |
+| `webhook.deliver` | One delivery attempt. |
+| `ai.analyze_asset` | Transcription and summaries. |
+| `maintenance.reap_uploads` | Reconcile waiting uploads against storage. |
+| `maintenance.rollup_usage` | Daily metering rollup. |
+
+## Scheduled maintenance
+
+The worker runs a scheduler alongside its claim loops. Recurring jobs are enqueued with a
+**time-bucketed idempotency key**:
+
+```python
+bucket = int(utcnow().timestamp() // 60)
+await jobs.enqueue(db, jobs.REAP_UPLOADS, {}, idempotency_key=f"reap:{bucket}")
+```
+
+Several workers racing to schedule the same tick produce exactly one job, with no leader
+election and no distributed lock.
+
+## Graceful shutdown
+
+On `SIGTERM` the worker stops claiming and cancels in-flight tasks. A job cancelled
+mid-flight is deferred by five seconds rather than left to time out, so a rolling deploy
+hands work over in seconds instead of waiting out a lease.
+
+## Transaction boundaries
+
+Handlers commit at meaningful points, not once at the end. A transcode commits after the
+asset is marked ready, before queuing follow-up MP4 work — so a crash between the two
+leaves a playable asset and a missing MP4, which the next request can fix, rather than
+rolling back a completed transcode.
+
+<Callout kind="warning" title="One subtle case">
+Reuse-detection on refresh tokens revokes a whole token family and then raises. The raise
+would normally roll the transaction back — discarding the very revocation it exists to
+perform. That path commits before raising. Any "write then reject" flow needs the same
+care.
+</Callout>
+
+## What is actually tested
+
+- An asset only reaches `ready` when every expected object is in storage.
+- A cancelled upload cannot be revived by bytes arriving afterwards.
+- Replaying a spent refresh token revokes the rotated one too.
+- A deleted asset stops playing before storage is reclaimed.
+- Agent tool tasks retry up to five times, then dead-letter.
+- Deterministic tool failures dead-letter on the first attempt rather than retrying four
+  more times to the same conclusion.

@@ -1,0 +1,45 @@
+---
+import { buildNav } from '@/lib/nav';
+import BaseLayout from '@/layouts/BaseLayout.astro';
+import Header from '@/components/Header.astro';
+
+const nav = await buildNav();
+---
+
+<BaseLayout title="Documentation" description="Everything about running and extending Fluxora.">
+  <Header />
+  <main class="mx-auto max-w-5xl px-5 py-14">
+    <h1 class="text-5xl">DOCUMENTATION</h1>
+    <p class="mt-4 max-w-2xl text-base font-medium text-muted-foreground">
+      The whole project, written down: how it is built, how to run it, how each part
+      behaves, and why it was built that way.
+    </p>
+    <div class="mt-6 border-t-4 border-[var(--brutal-ink)]"></div>
+
+    <div class="mt-10 space-y-10">
+      {
+        nav.map((group) => (
+          <section>
+            <h2 class="mb-4 inline-block border-2 border-[var(--brutal-ink)] bg-[var(--brutal-yellow)] px-3 py-1 font-[family-name:var(--font-heading)] text-sm uppercase tracking-wide text-[#0b0b0b]">
+              {group.section}
+            </h2>
+            <div class="grid gap-4 sm:grid-cols-2">
+              {group.entries.map((entry) => (
+                <a href={`/docs/${entry.slug}`} class="brutal brutal-press bg-card p-4">
+                  <span
+                    class="mb-2 inline-block size-3 border-2 border-[var(--brutal-ink)]"
+                    style={`background:var(--brutal-${entry.accent})`}
+                  />
+                  <h3 class="font-[family-name:var(--font-heading)] text-lg leading-tight">
+                    {entry.title}
+                  </h3>
+                  <p class="mt-1.5 text-sm text-muted-foreground">{entry.description}</p>
+                </a>
+              ))}
+            </div>
+          </section>
+        ))
+      }
+    </div>
+  </main>
+</BaseLayout>

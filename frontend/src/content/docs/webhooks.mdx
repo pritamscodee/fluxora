@@ -1,0 +1,213 @@
+---
+title: Webhooks and events
+description: An append-only event log, signed delivery, honest replay, and how to verify a signature.
+section: Core concepts
+order: 4
+accent: orange
+---
+
+import Callout from '@/components/docs/Callout.astro';
+import Mermaid from '@/components/Mermaid.astro';
+import Endpoint from '@/components/docs/Endpoint.astro';
+
+Transcoding is asynchronous, so webhooks are how you find out anything happened.
+
+## Events first, delivery second
+
+Everything that happens writes one row to an append-only `events` table. Webhook
+deliveries then **reference that stored event** rather than re-deriving a payload.
+
+<Callout kind="decision" title="Why that ordering matters">
+If a redelivery rebuilt its payload from current state, replaying a three-day-old
+`video.asset.ready` would send whatever the asset looks like now — possibly with a
+different duration, or after it was deleted. Referencing the stored event means a replay
+sends byte-identical JSON to the original attempt. Replay is only useful if it is honest.
+</Callout>
+
+<Mermaid
+  caption="One event, fanned out to each subscribed endpoint as its own delivery with its own attempt chain."
+  chart={`flowchart LR
+  A["Something happens"] --> E["events row<br/><small>immutable</small>"]
+  E --> F{"matching<br/>endpoints"}
+  F --> D1["delivery 1"]
+  F --> D2["delivery 2"]
+  D1 --> Q[("jobs")]
+  D2 --> Q
+  Q --> W["Worker"]
+  W -->|2xx| OK["delivered"]
+  W -->|non-2xx| R["retry<br/>1m 5m 30m 2h 6h 24h"]
+  R --> W
+  R -->|6 failures| X["exhausted"]`}
+/>
+
+## Registering an endpoint
+
+<Endpoint method="POST" path="/v1/projects/{id}/webhooks" auth="dashboard" />
+
+```json
+{
+  "url": "https://example.com/hooks/fluxora",
+  "events": ["video.asset.ready", "video.asset.errored"]
+}
+```
+
+An empty `events` array means **every** event type — the useful default for a first
+integration. Unknown event names are rejected at 422 with the offending names listed,
+rather than silently never firing.
+
+`https` is required except for `localhost`, so a local receiver still works in
+development.
+
+The response contains the signing secret, once:
+
+```json
+{ "data": { "id": "wh_...", "secret": "whsec_aBc123...", "active": true } }
+```
+
+<Endpoint method="GET" path="/v1/projects/{id}/webhooks" auth="dashboard" />
+<Endpoint method="PATCH" path="/v1/projects/{id}/webhooks/{wid}" auth="dashboard" />
+<Endpoint method="DELETE" path="/v1/projects/{id}/webhooks/{wid}" auth="dashboard" />
+<Endpoint method="POST" path="/v1/projects/{id}/webhooks/{wid}/rotate-secret" auth="dashboard" />
+
+## The envelope
+
+```json
+{
+  "type": "video.asset.ready",
+  "id": "evt_9mK2pQ...",
+  "created_at": "2026-10-27T12:00:00Z",
+  "object": { "type": "asset", "id": "Qdh4pm..." },
+  "environment": { "name": "production", "id": "proj_..." },
+  "data": {
+    "status": "ready",
+    "duration": 126.4,
+    "aspect_ratio": "16:9",
+    "max_stored_resolution": "FHD",
+    "playback_ids": [{ "id": "aB3x...", "policy": "public" }]
+  }
+}
+```
+
+Serialised with sorted keys and fixed separators. That is not cosmetic: the signature
+covers these exact bytes, so a receiver recomputing it over the raw body always gets the
+same answer.
+
+## Event types
+
+### Uploads
+
+| Event | Meaning |
+| --- | --- |
+| `video.upload.created` | An upload URL was issued. |
+| `video.upload.asset_created` | The object landed and became an asset. |
+| `video.upload.cancelled` | Cancelled before anything arrived. |
+| `video.upload.errored` | Timed out, or the object was empty. |
+
+### Assets
+
+| Event | Meaning |
+| --- | --- |
+| `video.asset.created` | Accepted; processing has not finished. |
+| `video.asset.ready` | **Playable.** Verified against storage. |
+| `video.asset.errored` | Processing failed; `data.errors` says why. |
+| `video.asset.updated` | Settings or AI metadata changed. |
+| `video.asset.deleted` | Deleted; playback already stopped. |
+| `video.asset.track.created` | A text or audio track was added. |
+| `video.asset.track.ready` | The track is usable. |
+| `video.asset.track.errored` | The track failed. |
+| `video.asset.static_rendition.ready` | A progressive MP4 finished. |
+
+The live-stream family is reserved and listed in the API, pending the live implementation.
+
+## Verifying a signature
+
+```
+Fluxora-Signature: t=1793085416,v1=6e330eee044aa4f974ade9050aad19bd...
+```
+
+`v1 = HMAC_SHA256(secret, "{t}.{raw_body}")`.
+
+```python
+import hmac, hashlib, time
+
+def verify(secret: str, body: bytes, header: str, tolerance: int = 300) -> bool:
+    parts = dict(p.split("=", 1) for p in header.split(",") if "=" in p)
+    try:
+        timestamp = int(parts["t"])
+        received = parts["v1"]
+    except (KeyError, ValueError):
+        return False
+    if abs(int(time.time()) - timestamp) > tolerance:
+        return False  # replay window
+    expected = hmac.new(
+        secret.encode(), f"{timestamp}.".encode() + body, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(expected, received)
+```
+
+```js
+import crypto from 'node:crypto';
+
+export function verify(secret, body, header, tolerance = 300) {
+  const parts = Object.fromEntries(header.split(',').map((p) => p.split('=')));
+  const timestamp = Number(parts.t);
+  if (!timestamp || Math.abs(Date.now() / 1000 - timestamp) > tolerance) return false;
+  const expected = crypto
+    .createHmac('sha256', secret)
+    .update(`${timestamp}.`)
+    .update(body)
+    .digest('hex');
+  const a = Buffer.from(expected);
+  const b = Buffer.from(parts.v1 ?? '');
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+```
+
+<Callout kind="warning" title="Three things receivers get wrong">
+**Use the raw body.** Parsing and re-serialising JSON changes the bytes and the signature
+will not match. Capture the body before any JSON middleware.
+
+**Compare in constant time.** `==` on an HMAC leaks timing information.
+
+**Enforce the timestamp.** Without it, a captured request is replayable forever. Five
+minutes is the intended window.
+</Callout>
+
+## Retries
+
+Delivery is attempted at 1m, 5m, 30m, 2h, 6h and 24h after the first failure. Any `2xx`
+ends the chain; six failures mark the delivery `exhausted`.
+
+Return `2xx` as soon as you have **stored** the event, not after you have processed it. A
+slow handler turns into a retry storm.
+
+<Endpoint method="GET" path="/v1/projects/{id}/webhooks/{wid}/deliveries" auth="dashboard">
+  Attempt counts, response codes, errors, and the next scheduled attempt.
+</Endpoint>
+
+## Replay
+
+<Endpoint method="POST" path="/v1/projects/{id}/events/{event_id}/redeliver" auth="dashboard" />
+
+Starts a fresh attempt chain for every currently-subscribed endpoint, sending the original
+stored bytes. A unique constraint on `(endpoint, event, attempt_chain)` means a
+double-dispatch of the same event cannot create duplicate deliveries.
+
+<Endpoint method="GET" path="/v1/projects/{id}/events" auth="dashboard">
+  The full log. Filter with `?type=` and `?object_id=`.
+</Endpoint>
+
+## Idempotent receivers
+
+Delivery is at-least-once. A receiver that was slow to answer may already have processed
+an event that is about to arrive again. Deduplicate on the envelope `id`:
+
+```python
+if already_seen(event["id"]):
+    return 200
+process(event)
+mark_seen(event["id"])
+```
+
+Events for one object also arrive in a sensible order —
+`created` before `ready` — but do not assume strict global ordering across objects.

@@ -1,0 +1,186 @@
+---
+title: Testing
+description: What the 57 tests actually assert, and why they run against real infrastructure.
+section: Operations
+order: 1
+accent: lime
+---
+
+import Callout from '@/components/docs/Callout.astro';
+import Mermaid from '@/components/Mermaid.astro';
+
+```bash
+cd backend
+.venv/Scripts/python -m pytest -q                         # 57 passed
+FLUXORA_TEST_STORAGE=s3 .venv/Scripts/python -m pytest -q # 57 passed
+.venv/Scripts/python -m scripts.smoke                     # live stack
+```
+
+## Three levels
+
+<Mermaid
+  caption="Each level covers something the one below cannot see."
+  chart={`flowchart TB
+  A["Unit-ish<br/><small>guardrails, policy, schemas</small><br/>no infrastructure"]
+  B["Integration<br/><small>ASGI + SQLite or real S3 + Redis</small><br/>docker compose"]
+  C["Smoke<br/><small>live API, separate worker, Neon, real storage</small>"]
+  A --> B --> C`}
+/>
+
+## No binary fixtures
+
+The sample video is synthesised with ffmpeg in a session fixture:
+
+```python
+subprocess.run([
+    "ffmpeg", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24:duration=6",
+    "-f", "lavfi", "-i", "sine=frequency=440:duration=6",
+    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", path,
+])
+```
+
+No binaries in the repository, and the tests exercise genuine decoding rather than a
+mocked probe.
+
+## The headline test
+
+`test_upload_to_playback` runs the whole pipeline and asserts at every step: presigned
+upload, reconcile, probe, ABR ladder, manifest rewriting, segment delivery, thumbnail
+caching, MP4 renditions, playback-ID resolution, and signed webhooks.
+
+The assertions that have each caught a real bug:
+
+```python
+assert all(ln.startswith(f"{playback_id}/") for ln in variants)
+assert "\\" not in master, "playlist URIs must use forward slashes"
+assert r.content[:12].find(b"ftyp") > 0, "init segment should be an fMP4 header"
+assert promoted["url"] is None, "a spent upload URL must not be handed back"
+assert r.headers["x-fluxora-cache"] == "hit"   # second request
+assert verify_webhook(secret, ready.body, ready.headers["fluxora-signature"])
+assert not verify_webhook("whsec_wrong", ready.body, ready.headers["fluxora-signature"])
+```
+
+The backslash assertion is there because the nested HLS layout produced
+`270p\playlist.m3u8` on Windows — a manifest that parses as valid and plays nowhere.
+
+## A real webhook receiver
+
+Webhook tests run an actual socket server, not a mocked client:
+
+```python
+receiver = await WebhookReceiver().start()   # asyncio.start_server on 127.0.0.1
+```
+
+The signature is computed over the exact bytes on the wire. Verifying it anywhere else
+would not prove the thing an integrator cares about. The negative case — a wrong secret
+must fail — is asserted alongside the positive one.
+
+## The same suite, two storage backends
+
+```bash
+FLUXORA_TEST_STORAGE=s3 pytest -q
+```
+
+Switches from local-disk storage to the docker-compose S3 service, with a per-run bucket.
+The presigned-upload path then goes over a real socket to a real object store, rather than
+through a filesystem shim:
+
+```python
+async def put_to_upload_url(client, url, data):
+    if url.startswith("http://testserver"):
+        response = await client.put(url.removeprefix("http://testserver"), content=data)
+    else:
+        async with httpx.AsyncClient(timeout=180.0) as net:
+            response = await net.put(url, content=data)
+```
+
+Both modes must pass before a change lands.
+
+## Agent tests without an API key
+
+Twenty-six of thirty agent tests need no model at all. The LLM is faked:
+
+```python
+class FakeLLM:
+    def with_structured_output(self, schema):
+        return _StructuredFake(self.plan)
+```
+
+What is being tested is the machinery around the model — that a bad plan is refused, that
+a risky plan cannot run unattended, that arguments are validated — and that machinery
+should be deterministic.
+
+The **queue is not faked**. A real BullMQ worker runs in-process against the live Redis on
+a throwaway queue, so retries and dead-lettering are genuinely exercised:
+
+```python
+worker = Worker(unique_queue, _process, {"connection": settings.redis_url})
+```
+
+If Redis is not up, those tests skip with a clear reason rather than failing.
+
+## Tests that assert nothing happened
+
+The most important agent assertion is a negative:
+
+```python
+planned = await run_plan_phase(prompt=f"delete asset {asset['id']}", ...)
+assert planned["status"] == "awaiting_approval"
+
+still_there = await client.get(f"/v1/video/assets/{asset['id']}", auth=account.basic)
+assert still_there.status_code == 200    # nothing has happened yet
+```
+
+## Security coverage
+
+| Assertion | Why |
+| --- | --- |
+| A dashboard token cannot drive the video API | The two systems must stay disjoint |
+| An API key cannot reach dashboard routes | Same, in reverse |
+| Another tenant's project returns 404, not 403 | Existence must not be confirmable |
+| A revoked API key returns 403 | Distinguishable from an unknown key |
+| Duplicate registration looks like a wrong password | No account enumeration |
+| Replaying a refresh token revokes the whole family | Reuse means it leaked |
+| A thumbnail token cannot fetch the video | Audience enforcement |
+| A revoked signing key invalidates existing tokens | Rotation actually works |
+| Traversal-shaped filenames are rejected | Storage keys are not user input |
+| Thumbnail parameters are bounded | No 500s from ffmpeg on absurd input |
+
+## The smoke test
+
+```bash
+python -m scripts.smoke
+```
+
+Fifteen numbered steps against a running stack — real HTTP, a separate worker process,
+Neon, real object storage. It is the only level that can catch a bug which only exists
+when the pieces are actually separate processes.
+
+<Callout kind="note" title="It caught one">
+OpenTelemetry was being installed inside the FastAPI lifespan hook. Every in-process test
+passed, because the test client never runs a real startup sequence. Under uvicorn the API
+refused to boot: `Cannot add middleware after an application has started`.
+</Callout>
+
+## Writing a test
+
+```python
+@pytest.mark.asyncio
+async def test_something(client, account, sample_video):
+    r = await client.post("/v1/video/uploads", json={}, auth=account.basic)
+    upload = r.json()["data"]
+    await put_to_upload_url(client, upload["url"], sample_video.read_bytes())
+    await client.get(f"/v1/video/uploads/{upload['id']}", auth=account.basic)
+    await drain_once()    # run the queue to completion in-process
+```
+
+`account` gives a registered user with a project and an API key. `drain_once()` runs
+queued jobs to completion without a separate worker process.
+
+<Callout kind="warning" title="Event loop scoping">
+Async fixtures run on the test's own loop (`asyncio_default_fixture_loop_scope =
+function`). A fixture holding a long-lived connection — the BullMQ worker, Redis — must be
+on the same loop as the test body, or its loop is simply not running while the test awaits
+a result, and everything times out for no visible reason. Only the one-off schema setup is
+pinned to the session loop.
+</Callout>

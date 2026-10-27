@@ -1,0 +1,14 @@
+{
+  "identities": [
+    {
+      "name": "fluxora",
+      "credentials": [
+        {
+          "accessKey": "fluxora",
+          "secretKey": "fluxora-dev-secret"
+        }
+      ],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}

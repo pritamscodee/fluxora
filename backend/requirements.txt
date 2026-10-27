@@ -1,0 +1,48 @@
+# API
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.14.1
+pydantic-settings==2.16.1
+python-multipart==0.0.20
+email-validator==2.2.0
+
+# Database
+SQLAlchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+aiosqlite==0.20.0
+greenlet==3.1.1
+alembic==1.14.0
+
+# Auth
+python-jose[cryptography]==3.3.0
+argon2-cffi==23.1.0
+
+# Object storage (S3-compatible: MinIO/SeaweedFS/R2/S3)
+boto3==1.43.119
+
+httpx==0.28.1
+
+# Observability
+opentelemetry-api==1.45.1
+opentelemetry-sdk==1.45.1
+opentelemetry-instrumentation-fastapi==0.66b1
+opentelemetry-instrumentation-sqlalchemy==0.66b1
+opentelemetry-exporter-otlp-proto-http==1.45.1
+
+# Agent: LangGraph orchestration, OpenAI planner, LangSmith tracing
+langgraph==1.2.18
+langgraph-checkpoint-sqlite==3.1.2
+langchain-core==1.7.0
+langchain-openai==1.7.3
+langchain-anthropic==1.7.6
+langsmith==0.14.12
+openai==2.54.0
+anthropic==1.17.0
+
+# Guardrails. Local validators work offline; Hub validators are installed separately
+# with `guardrails hub install hub://<name>`.
+guardrails-ai==0.11.0
+
+# Agent tool task bus
+bullmq==3.4.4
+redis==8.1.0

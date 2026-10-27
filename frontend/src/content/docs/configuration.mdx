@@ -1,0 +1,188 @@
+---
+title: Configuration
+description: Every environment variable, what it does, and which ones matter in production.
+section: Getting started
+order: 2
+accent: cyan
+---
+
+import Callout from '@/components/docs/Callout.astro';
+
+Configuration is a single `Settings` object loaded from the environment and `.env`.
+Unknown keys are ignored; everything has a default that works locally.
+
+## Application
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `ENVIRONMENT` | `development` | Appears on webhook envelopes and traces. |
+| `API_BASE_URL` | `http://localhost:8000` | Used to build absolute URLs handed to clients. Must be the externally reachable origin. |
+| `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowlist. |
+
+## Database
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `DATABASE_URL` | SQLite file | Paste a Neon URL unmodified; see below. |
+| `DB_ECHO` | `false` | Logs every statement. Noisy. |
+
+Fluxora normalises the URL before handing it to SQLAlchemy:
+
+- `postgresql://` and `postgres://` become `postgresql+asyncpg://`.
+- `sslmode`, `channel_binding` and `options` are stripped — they are libpq parameters that
+  asyncpg rejects outright.
+- TLS is re-applied through the driver's own `ssl` connect argument, so stripping those
+  parameters does not silently downgrade the connection.
+
+<Callout kind="note" title="SQLite is a convenience, not a mode">
+With no `DATABASE_URL` the stack runs on SQLite and self-creates its schema, which is what
+lets the test suite run with no infrastructure. The job queue falls back to a
+compare-and-set claim because SQLite has no `SKIP LOCKED`. Use Postgres for anything with
+more than one worker.
+</Callout>
+
+## Object storage
+
+One S3-compatible backend serves MinIO, SeaweedFS, Cloudflare R2 and AWS S3.
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `S3_ENDPOINT` | — | Empty means fall back to local disk. |
+| `S3_ACCESS_KEY_ID` | — | |
+| `S3_SECRET_ACCESS_KEY` | — | |
+| `S3_BUCKET` | `fluxora` | Created on first use if absent. |
+| `S3_REGION` | `us-east-1` | Use `auto` for R2. |
+| `S3_FORCE_PATH_STYLE` | `true` | Required by MinIO and SeaweedFS. |
+| `S3_PUBLIC_ENDPOINT` | — | See below. |
+| `S3_CREATE_BUCKET` | `true` | Disable if the bucket is managed elsewhere. |
+
+### `S3_PUBLIC_ENDPOINT`
+
+A presigned URL's signature covers the hostname. If the API reaches storage at
+`http://minio:9000` on a Docker network but browsers reach it at
+`https://storage.example.com`, a URL signed for the first host fails the moment a browser
+uses it — with an opaque 403.
+
+Set `S3_PUBLIC_ENDPOINT` to the browser-facing origin and a second client signs
+client-facing URLs against it.
+
+### Cloudflare R2
+
+```bash
+S3_ENDPOINT=https://<account_id>.r2.cloudflarestorage.com
+S3_REGION=auto
+S3_ACCESS_KEY_ID=...
+S3_SECRET_ACCESS_KEY=...
+```
+
+Nothing else changes.
+
+## Authentication
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `JWT_SECRET` | insecure dev value | **Must** be set in production. `openssl rand -hex 32`. |
+| `ACCESS_TOKEN_TTL_MINUTES` | `30` | |
+| `REFRESH_TOKEN_TTL_DAYS` | `30` | Refresh tokens rotate on use. |
+
+Signed playback uses per-project RSA keypairs generated through the API, not environment
+variables — see [Playback](/docs/playback).
+
+## Media processing
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `FFMPEG_PATH` | `ffmpeg` | |
+| `FFPROBE_PATH` | `ffprobe` | |
+| `WORKER_CONCURRENCY` | `2` | Parallel jobs per worker process. Each holds a DB connection. |
+| `WORKER_POLL_INTERVAL_SECONDS` | `2.0` | Idle poll interval. |
+| `MEDIA_SCRATCH_DIR` | `./tmp` | Needs room for source plus full ladder. |
+| `TEST_ASSET_MAX_DURATION_SECONDS` | `10` | Cap applied to `test: true` assets. |
+
+<Callout kind="warning" title="Scratch space">
+A transcode downloads the source and writes every rendition locally before uploading.
+Budget roughly 3× the largest source file per concurrent job.
+</Callout>
+
+## Uploads
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `UPLOAD_DEFAULT_TIMEOUT_SECONDS` | `3600` | |
+| `UPLOAD_MAX_TIMEOUT_SECONDS` | `604800` | Seven days. |
+
+## Webhooks
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `WEBHOOK_RETRY_SCHEDULE_SECONDS` | `[60,300,1800,7200,21600,86400]` | Six attempts over 24h. |
+| `WEBHOOK_TOLERANCE_SECONDS` | `300` | Replay window receivers should enforce. |
+
+## LLM and agent
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `LLM_PROVIDER` | `openai` | `openai` or `anthropic`. |
+| `OPENAI_API_KEY` | — | Without it the agent returns 503 rather than degrading. |
+| `OPENAI_MODEL` | `gpt-4o` | |
+| `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` | — | Alternative provider. |
+| `LLM_TEMPERATURE` | `0.0` | Planning should be boring. |
+
+### Tracing
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `LANGSMITH_TRACING` | `false` | |
+| `LANGSMITH_API_KEY` | — | Tracing stays off without it, with a warning. |
+| `LANGSMITH_PROJECT` | `fluxora` | |
+
+Tracing is explicitly set to `false` when unconfigured, because a stale `LANGSMITH_TRACING`
+in the environment makes every run try to reach the API and stall on network timeouts.
+
+### Guardrails
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `AGENT_MAX_PLAN_STEPS` | `8` | |
+| `AGENT_MAX_TOOL_CALLS` | `12` | Per run. |
+| `AGENT_MAX_RUNS_PER_HOUR` | `60` | Per project. |
+| `AGENT_MAX_PROMPT_CHARS` | `8000` | |
+| `AGENT_REQUIRE_APPROVAL` | `true` | **Leave this on.** |
+| `GUARDRAILS_INPUT_VALIDATOR_NAMES` | — | Optional Hub validators, comma-separated. |
+| `GUARDRAILS_OUTPUT_VALIDATOR_NAMES` | — | Same, for output. |
+
+<Callout kind="danger" title="AGENT_REQUIRE_APPROVAL">
+Turning this off lets the agent run `delete_asset`, `create_clip` and
+`enable_mp4_downloads` unattended. The code logs loudly when it is disabled. It exists for
+sandboxed evaluation runs, not for production.
+</Callout>
+
+## Redis and BullMQ
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `REDIS_URL` | `redis://localhost:6379/0` | |
+| `AGENT_TOOL_QUEUE` | `fluxora-agent-tools` | Dead letters land in `<queue>-dlq`. |
+| `AGENT_TOOL_CONCURRENCY` | `4` | |
+| `AGENT_TOOL_TIMEOUT_SECONDS` | `900` | Also the BullMQ lock duration. |
+
+Redis should run with `maxmemory-policy noeviction`. Evicting a queue key silently drops
+in-flight jobs.
+
+## Observability
+
+| Variable | Default | Notes |
+| --- | --- | --- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | — | Empty means in-process tracing only. |
+| `OTEL_SERVICE_NAME` | `fluxora-api` | Set per process. |
+
+## Production checklist
+
+- `JWT_SECRET` set to real entropy.
+- `DATABASE_URL` pointing at pooled Postgres.
+- `S3_*` set, and `S3_PUBLIC_ENDPOINT` set if the hostnames differ.
+- `API_BASE_URL` set to the externally reachable origin.
+- `CORS_ORIGINS` narrowed to real origins.
+- `AGENT_REQUIRE_APPROVAL=true`.
+- Redis with `noeviction`.
+- `ENVIRONMENT=production`.

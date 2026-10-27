@@ -1,0 +1,50 @@
+---
+/**
+ * Coloured callout. The `kind` picks both the colour and the label, so the same meaning
+ * always looks the same across the docs.
+ */
+interface Props {
+  kind?: 'note' | 'tip' | 'warning' | 'danger' | 'decision';
+  title?: string;
+}
+
+const { kind = 'note', title } = Astro.props;
+
+const STYLES = {
+  note:     { bg: 'var(--brutal-cyan)',   label: 'Note' },
+  tip:      { bg: 'var(--brutal-lime)',   label: 'Tip' },
+  warning:  { bg: 'var(--brutal-orange)', label: 'Careful' },
+  danger:   { bg: 'var(--brutal-red)',    label: 'Danger' },
+  decision: { bg: 'var(--brutal-violet)', label: 'Design decision' },
+} as const;
+
+const style = STYLES[kind];
+---
+
+<aside class="not-prose brutal my-6 bg-card">
+  <div
+    class="flex items-center gap-2 border-b-[3px] border-[var(--brutal-ink)] px-4 py-2"
+    style={`background:${style.bg};color:#0b0b0b`}
+  >
+    <span class="text-xs font-extrabold uppercase tracking-widest">
+      {title ?? style.label}
+    </span>
+  </div>
+  <div class="callout-body px-4 py-3 text-[15px] leading-7">
+    <slot />
+  </div>
+</aside>
+
+<style>
+  .callout-body :global(p + p) { margin-top: 0.75rem; }
+  .callout-body :global(code) {
+    border: 2px solid var(--brutal-ink);
+    background: var(--background);
+    padding: 0 0.3rem;
+    font-size: 0.85em;
+    font-weight: 600;
+  }
+  .callout-body :global(ul) { margin: 0.5rem 0; padding-left: 1.1rem; list-style: square; }
+  .callout-body :global(li) { margin-top: 0.25rem; }
+  .callout-body :global(a) { font-weight: 700; text-decoration: underline; }
+</style>

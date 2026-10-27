@@ -1,0 +1,186 @@
+---
+title: Tool reference
+description: Every tool the agent can call, its arguments, its risk level, and how to add one.
+section: The agent
+order: 4
+accent: lime
+---
+
+import Callout from '@/components/docs/Callout.astro';
+
+The agent's entire capability surface. If something is not here, the agent cannot do it.
+
+## Read
+
+Auto-approved. No side effects.
+
+### `list_assets`
+
+Lists assets in the project, newest first. The planner uses this when the user describes
+an asset instead of naming one.
+
+| Argument | Type | Notes |
+| --- | --- | --- |
+| `status` | string? | `preparing`, `ready` or `errored` |
+| `limit` | int | 1–50, default 10 |
+
+### `get_asset`
+
+Full detail for one asset: status, duration, tracks, renditions, errors, AI metadata.
+
+| Argument | Type | Notes |
+| --- | --- | --- |
+| `asset_id` | string | Required |
+
+### `generate_thumbnail`
+
+Returns a thumbnail URL at a timestamp. Requires a ready asset with a playback ID, and
+rejects a timestamp past the duration with the actual duration in the message.
+
+| Argument | Type | Notes |
+| --- | --- | --- |
+| `asset_id` | string | Required |
+| `time` | float | Seconds, default 0 |
+| `width` | int? | 16–3840 |
+
+### `project_usage`
+
+Asset counts by status and metered usage totals for the project.
+
+## Write
+
+Auto-approved. Changes metadata; cheap to undo.
+
+### `save_asset_summary`
+
+Stores a written summary and optional chapter markers.
+
+| Argument | Type | Notes |
+| --- | --- | --- |
+| `asset_id` | string | Required |
+| `summary` | string | ≤ 4000 chars |
+| `chapters` | list? | `[{start, title}]` |
+
+<Callout kind="note" title="Chapters are normalised, not trusted">
+Chapter data is model output. Entries are capped at 50, each `start` must parse as a float
+and fall inside the asset's duration, titles are truncated to 200 characters, and the list
+is sorted. A hallucinated chapter at 9999s is dropped rather than stored.
+</Callout>
+
+### `add_playback_id`
+
+Mints an additional playback ID, `public` or `signed`.
+
+## Expensive
+
+**Requires human approval.** These cost real CPU and money.
+
+### `create_clip`
+
+Cuts a new asset from a time range. Arguments are re-validated through the same
+`ClipCreate` schema the HTTP API uses, so a clip the public API would reject cannot be
+created here either.
+
+| Argument | Type | Notes |
+| --- | --- | --- |
+| `asset_id` | string | Must be `ready` |
+| `start_time` | float | ≥ 0 |
+| `end_time` | float | > `start_time`, ≥ 0.5s span |
+| `passthrough` | string? | |
+
+### `enable_mp4_downloads`
+
+Turns on progressive MP4 renditions and queues the encode.
+
+| Argument | Type | Notes |
+| --- | --- | --- |
+| `asset_id` | string | Must be `ready` |
+| `level` | string | `standard` or `capped-1080p` |
+
+Already at the requested level returns `already_enabled: true` without queueing anything.
+
+### `generate_captions`
+
+Transcribes the audio and attaches a subtitle track. Queues an `ai.analyze_asset` job;
+the agent reports that it is in flight rather than waiting for it.
+
+| Argument | Type | Notes |
+| --- | --- | --- |
+| `asset_id` | string | Must be `ready` |
+| `language_code` | string | Default `en` |
+| `name` | string? | |
+
+## Destructive
+
+**Requires human approval.** Cannot be undone.
+
+### `delete_asset`
+
+Deletes the asset and stops playback immediately. Storage is reclaimed asynchronously.
+
+## Anatomy of a tool
+
+```python
+class ClipArgs(BaseModel):
+    model_config = {"extra": "forbid"}
+    asset_id: str = Field(max_length=40)
+    start_time: float = Field(ge=0, description="Clip in-point in seconds.")
+    end_time: float = Field(gt=0, description="Clip out-point in seconds.")
+
+
+@tool(
+    "create_clip",
+    "Cut a new asset from a time range of an existing ready asset. This starts a "
+    "transcode and is billable.",
+    ClipArgs,
+    Risk.EXPENSIVE,
+)
+async def create_clip(ctx: ToolContext, args: ClipArgs) -> dict:
+    source = await _asset(ctx, args.asset_id)          # scoped to ctx.project
+    body = ClipCreate(start_time=args.start_time, end_time=args.end_time,
+                      playback_policy=["public"])
+    clip = await asset_service.create_clip(ctx.db, ctx.project, source, body)
+    return {"clip_asset_id": clip.id, "status": clip.status}
+```
+
+Four things every tool gets for free from this shape:
+
+1. **A JSON schema** published to the planner, including field descriptions.
+2. **Validation** before the handler runs — the handler receives a typed model.
+3. **A risk level** that drives approval.
+4. **Tenant scoping** — `ctx.project` comes from the run, never from arguments.
+
+`extra: "forbid"` means a hallucinated argument is a validation error the model can see
+and correct, not a silently ignored field.
+
+## Adding a tool
+
+1. Define a Pydantic args model with `extra: "forbid"` and a `description` on each field —
+   the planner reads them.
+2. Write an async handler taking `(ctx, args)` and returning a JSON-serialisable dict.
+3. Decorate with `@tool(name, description, args, risk)`.
+4. Pick the risk level honestly. If it spends money or cannot be undone, it is at least
+   `expensive`.
+
+That is all. The registry, schema publication, validation, approval gating and queue
+dispatch are generic.
+
+<Callout kind="warning" title="Risk is a security boundary">
+A test asserts every tool at `expensive` or `destructive` actually reports
+`needs_approval`, and that `delete_asset` specifically is `DESTRUCTIVE`. Marking an
+expensive tool as `read` to avoid an approval prompt is the single easiest way to
+undermine the whole design.
+</Callout>
+
+## Errors are observations, not crashes
+
+A tool that cannot do what was asked returns a `ToolError`, which becomes an observation
+the model can read and adapt to:
+
+```json
+{ "step": 1, "tool": "get_asset", "ok": false,
+  "error": "asset abc123 was not found", "dead_lettered": true }
+```
+
+Errors that are plainly the model's fault — unknown tool, invalid arguments — carry a
+message naming the problem, because the fastest fix is the model correcting itself.

@@ -1,0 +1,140 @@
+---
+title: Introduction
+description: What Fluxora is, what it does, and what it deliberately does not do.
+section: Overview
+order: 1
+accent: yellow
+---
+
+import Callout from '@/components/docs/Callout.astro';
+import Mermaid from '@/components/Mermaid.astro';
+
+Fluxora is an API-first video platform. You hand it a video file; it gives you back a URL
+that plays adaptively on anything. Around that core it adds the things a real video
+product needs — webhooks, usage metering, signed access, captions — and an agent that can
+operate all of it on your behalf without being able to do anything catastrophic.
+
+It was built by studying the publicly documented behaviour of Mux: its API reference,
+webhook schemas, feature pages and observable dashboard behaviour. The result is an
+original implementation of equivalent capabilities. No proprietary code or branding was
+copied, and nothing here depends on guessing at undocumented internals.
+
+## The one thing it has to do
+
+Everything else is in service of this:
+
+```
+file in  ──▶  adaptive HLS out
+```
+
+That path is verified end to end on every change, against a live stack — real Postgres,
+real object storage, a separate worker process:
+
+```text
+ 5. uploaded 4,065,109 bytes directly to object storage
+ 8. asset ready: 5.00s 16:9 HD, 2 tracks
+ 9. master manifest serves 4 renditions
+12. thumbnail rendered (19,003 bytes)
+13. static mp4 renditions: ['high', 'low', 'medium']
+15. asset deleted and playback stopped immediately
+```
+
+## How the pieces fit
+
+<Mermaid
+  caption="Four processes. The API only creates rows and queues work; everything slow happens somewhere it can safely fail."
+  chart={`flowchart TB
+  subgraph edge["Client"]
+    C["Browser / SDK"]
+  end
+
+  subgraph app["Fluxora"]
+    A["FastAPI<br/>API"]
+    W["Media worker<br/>ffmpeg"]
+    T["Agent tool worker"]
+    G["LangGraph agent"]
+  end
+
+  subgraph data["State"]
+    DB[("Postgres<br/>Neon")]
+    S3[("Object storage<br/>S3-compatible")]
+    R[("Redis<br/>BullMQ")]
+  end
+
+  C -->|REST| A
+  C -->|presigned PUT| S3
+  A --> DB
+  A --> G
+  G --> R
+  R --> T
+  T --> DB
+  W --> DB
+  W --> S3
+  A -->|manifests, segments| S3
+  A -->|signed webhooks| C`}
+/>
+
+Each process can be restarted independently. A worker killed mid-transcode loses no work:
+its job lease expires and another worker picks the job up and re-derives the same output.
+
+## What it does
+
+**Ingest.** Direct uploads through a presigned PUT, or pull from any URL. Uploads
+reconcile against storage rather than trusting the client to report success, so an upload
+converges even if the browser is closed mid-flight.
+
+**Processing.** `ffprobe` for metadata, then a single ffmpeg pass that produces the whole
+adaptive ladder. Thumbnails at arbitrary timestamps, animated GIFs, storyboard sprites,
+progressive MP4s, EBU R128 loudness normalisation, and frame-accurate clipping.
+
+**Delivery.** fMP4 HLS behind opaque playback IDs. Public, or signed with an RS256 token
+whose audience pins it to one kind of resource — a thumbnail token cannot fetch the video.
+
+**Platform.** Projects and API keys, an append-only event log, HMAC-signed webhooks with
+exponential retries and honest replay, daily usage metering.
+
+**Agent.** A LangGraph planner turns a sentence into a plan of tool calls, runs it through
+two independent layers of guardrails, parks anything expensive or destructive for human
+approval, and dispatches each call as a retried BullMQ job.
+
+## What it does not do
+
+Being explicit about this is more useful than a longer feature list.
+
+| Not implemented | Why |
+| --- | --- |
+| DRM | Needs licensing relationships with device vendors. Signed URLs are the ceiling here. |
+| Just-in-time encoding | The full ladder is rendered up front. Slower to first play, far simpler delivery. |
+| Low-latency HLS | Standard-latency HLS only. |
+| Simulcast to third parties | Out of scope. |
+| Multi-CDN | Single origin with cache headers. A CDN in front is a deployment concern. |
+
+Live streaming over RTMP is modelled in the schema and the API surface but is not yet
+implemented end to end — see [Roadmap](/docs/roadmap).
+
+<Callout kind="decision" title="Why these were cut">
+Each of these is a genuine product, not a missing afternoon of work. Shipping a working
+upload-to-playback path end to end was worth more than four features that each stop
+halfway. The [feature matrix](/docs/feature-matrix) records exactly what was studied and
+what was built.
+</Callout>
+
+## Design commitments
+
+A few rules the codebase holds to, each of which shows up repeatedly in the pages that
+follow:
+
+- **The API never blocks on ffmpeg.** Routes create rows and enqueue jobs. Nothing else.
+- **Jobs are idempotent.** A retry re-derives its output to a deterministic storage key,
+  overwriting a partial result rather than appending a second copy.
+- **An asset is `ready` only when it is really playable.** Readiness is verified against
+  storage, not assumed from an exit code.
+- **Storage is private.** Delivery is proxied so playback policy is enforced in one place.
+- **The agent proposes; the backend decides.** The model emits a tool name and JSON, never
+  code. ffmpeg is always invoked as an argv list, never through a shell.
+
+## Where to go next
+
+- [Quickstart](/docs/quickstart) — running locally in about ten minutes.
+- [Architecture](/docs/architecture) — the decisions and their trade-offs.
+- [Agent overview](/docs/agent-overview) — how planning, approval and execution fit.

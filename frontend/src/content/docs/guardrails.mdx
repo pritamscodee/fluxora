@@ -1,0 +1,174 @@
+---
+title: Guardrails
+description: Guardrails AI for language, deterministic policy for structure, and why the second layer is the one that matters.
+section: The agent
+order: 2
+accent: pink
+---
+
+import Callout from '@/components/docs/Callout.astro';
+import Mermaid from '@/components/Mermaid.astro';
+
+Two independent layers, screening two different things.
+
+<Mermaid
+  caption="Language is screened by Guardrails AI; structure is screened by code that cannot be uninstalled."
+  chart={`flowchart TB
+  subgraph L1["Layer 1 — Guardrails AI (natural language)"]
+    A["Input guard<br/>injection · scope · length"]
+    B["Output guard<br/>secret leakage · length"]
+  end
+  subgraph L2["Layer 2 — Policy (structure)"]
+    C["Tool allowlist"]
+    D["Pydantic argument schemas"]
+    E["Plan and call ceilings"]
+    F["Risk gating → human approval"]
+  end
+  P["Prompt"] --> A --> M["LLM planner"]
+  M --> C --> D --> E --> F --> X["Execute"]
+  X --> B --> R["Answer"]`}
+/>
+
+<Callout kind="decision" title="Why two layers, and why they are not equal">
+Layer 1 is heuristic. It catches blunt attempts and improves with better validators, but
+a determined adversary will eventually phrase something past it.
+
+Layer 2 does not care. It does not read the prompt, does not reason, and cannot be talked
+around — a tool either exists in the registry or it does not; arguments either satisfy a
+schema or they do not. **A guardrail you can uninstall is not a guardrail**, which is why
+layer 2 is plain Python with no optional dependency.
+</Callout>
+
+## Layer 1 — Guardrails AI
+
+Validators are registered locally, so they work with no network access:
+
+```python
+@register_validator(name="fluxora/no_prompt_injection", data_type="string")
+class NoPromptInjection(Validator):
+    def _validate(self, value, metadata=None):
+        for pattern in _INJECTION_PATTERNS:
+            if match := re.search(pattern, str(value).lower()):
+                return FailResult(
+                    error_message=f"appears to try to override instructions ({match.group(0)!r})"
+                )
+        return PassResult()
+```
+
+### Input guard
+
+**Length.** Capped at `AGENT_MAX_PROMPT_CHARS`.
+
+**Instruction override.** Patterns for "ignore previous instructions", "disregard the
+above", "reveal your system prompt", "bypass approval", "without asking for permission",
+plus a few obvious command-injection shapes.
+
+**Scope.** The request must plausibly concern video operations. This blocks the
+"use the video agent as a general-purpose chatbot" failure mode — amusing, but it is
+someone else's API bill and an unbounded surface.
+
+A blocked prompt means **the model is never called at all**, which is asserted in the
+tests by checking the fake LLM recorded no prompts.
+
+### Output guard
+
+Scans generated prose for credentials before it is returned or persisted: OpenAI and
+Anthropic key shapes, Fluxora API key ids, webhook secrets, database connection strings,
+PEM private keys, JWTs, AWS access key ids.
+
+<Callout kind="warning" title="Why output needs screening at all">
+The model is not the threat here. A tool result or a traceback can carry a secret into the
+summary — an error message containing a presigned URL, a connection string in a stack
+trace. Screening output catches the leak regardless of how it got there.
+</Callout>
+
+If output is blocked, the run does not fail: the answer is replaced with a redacted
+mechanical summary built from the observations. The work already happened and the user is
+entitled to know what it did.
+
+### Optional Hub validators
+
+```bash
+guardrails hub install hub://guardrails/detect_pii
+guardrails hub install hub://guardrails/detect_jailbreak
+```
+
+```bash
+GUARDRAILS_INPUT_VALIDATOR_NAMES=guardrails/detect_jailbreak
+GUARDRAILS_OUTPUT_VALIDATOR_NAMES=guardrails/detect_pii
+```
+
+Validators named here are loaded if installed, and **skipped with a warning if not**, so a
+deployment without Hub access still runs on the local validators. Several Hub validators
+pull ML models; treat them as an upgrade, not a baseline.
+
+<Callout kind="note" title="Vendor telemetry is opted out">
+Guardrails AI defaults `enable_metrics` to true when no `~/.guardrailsrc` exists, and
+builds its telemetry exporter at *import* time — so setting the flag afterwards is too
+late. Fluxora writes the opt-out before importing the library. Prompt metadata going to a
+third party by default is not an acceptable silent default.
+</Callout>
+
+## Layer 2 — Policy
+
+### Tool allowlist
+
+The model can only ever name a tool in the registry. Everything else is rejected with the
+list of valid names, which the model can use to correct itself.
+
+### Argument schemas
+
+```python
+decision = check_plan([{"tool": "create_clip",
+                        "args": {"asset_id": "a", "start_time": "soon"}}])
+# not allowed: "step 1: invalid arguments for create_clip: start_time: Input should be a valid number"
+```
+
+The same Pydantic models the HTTP API uses. A clip the public API would reject cannot be
+created through the agent either.
+
+### Ceilings
+
+| Limit | Default |
+| --- | --- |
+| Plan steps | 8 |
+| Tool calls per run | 12 |
+| Runs per project per hour | 60 |
+| Prompt length | 8000 chars |
+
+Checked both at plan time and immediately before each tool executes, because a single
+check at plan time would not bound a graph that loops.
+
+### Risk gating
+
+Any `expensive` or `destructive` step forces the whole run to human approval. The gate is
+a status in the database, so it survives process restarts and cannot be prompted away.
+
+```bash
+AGENT_REQUIRE_APPROVAL=false   # sandboxes only
+```
+
+Disabling it logs a warning naming the high-risk steps it is letting through.
+
+## Tenant scoping as a guardrail
+
+Worth stating as policy, not an implementation detail: the project comes from the
+authenticated run, never from model output. The model can name any asset id it likes; a
+tool scoped to another tenant's project simply fails to resolve it.
+
+## What is tested
+
+Twenty-six of the thirty agent tests are guardrail tests, and they run with no API key:
+
+- Instruction-override prompts are blocked, and the model is never called.
+- Out-of-scope prompts are blocked.
+- Ordinary requests pass — a guardrail that blocks real work is a bug, so this is asserted
+  explicitly.
+- Oversized prompts are blocked.
+- Each credential shape is blocked on output.
+- Unknown tools, bad arguments and over-long plans are all rejected.
+- Every destructive tool requires approval.
+- A destructive plan changes nothing before approval — asserted by confirming the asset
+  still exists.
+- Resuming with a swapped-in plan is blocked.
+- Tool-call ceilings are enforced.

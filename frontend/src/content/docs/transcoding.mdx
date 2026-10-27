@@ -1,0 +1,209 @@
+---
+title: Transcoding
+description: One ffmpeg pass, the whole adaptive ladder, and the details that decide whether playback actually works.
+section: Core concepts
+order: 2
+accent: lime
+---
+
+import Callout from '@/components/docs/Callout.astro';
+import Mermaid from '@/components/Mermaid.astro';
+
+Transcoding is where most of the real engineering is, and where the subtle bugs live.
+
+## The pipeline
+
+<Mermaid
+  caption="A transcode job, start to finish. Readiness is verified against storage before the event fires."
+  chart={`flowchart TD
+  A["Claim job"] --> B["Download source"]
+  B --> C["ffprobe"]
+  C -->|no video stream| E1["errored: invalid_input"]
+  C -->|undecodable| E1
+  C --> D{"test asset?"}
+  D -->|yes| T["Trim to 10s"]
+  D -->|no| L
+  T --> L["Select ABR ladder"]
+  L --> N{"normalize audio?"}
+  N -->|yes| M["loudnorm pass 1:<br/>measure"]
+  N -->|no| H
+  M --> H["Single ffmpeg pass:<br/>all renditions + HLS"]
+  H -->|ffmpeg failed| E2["errored: transcode_failed"]
+  H --> V["Verify every rung:<br/>init + playlist + segments"]
+  V -->|incomplete| E2
+  V --> U["Upload to storage"]
+  U --> W["Verify master in storage"]
+  W -->|missing| E2
+  W --> R["status: ready<br/>emit video.asset.ready"]
+  R --> X["Queue MP4s + storyboard"]`}
+/>
+
+## Metadata extraction
+
+`ffprobe` produces JSON; from it we derive duration, dimensions, frame rate, codecs,
+channel count, and the full stream list stored as `input_info`.
+
+Two derived fields are worth noting. `aspect_ratio` is reduced by GCD, so 1920×1080
+becomes `16:9` rather than `1920:1080`. `max_stored_resolution` is bucketed into `SD`,
+`HD`, `FHD`, `QHD`, `UHD`, because that is what callers actually branch on.
+
+## The ABR ladder
+
+A fixed ladder, capped at the source height:
+
+| Rung | Height | Video | Audio |
+| --- | --- | --- | --- |
+| 270p | 270 | 400 kbps | 64 kbps |
+| 360p | 360 | 800 kbps | 96 kbps |
+| 480p | 480 | 1400 kbps | 128 kbps |
+| 720p | 720 | 2800 kbps | 128 kbps |
+| 1080p | 1080 | 5000 kbps | 192 kbps |
+| 1440p | 1440 | 8000 kbps | 192 kbps |
+| 2160p | 2160 | 14000 kbps | 192 kbps |
+
+Rules: never upscale (a rung above the source is pure waste), keep at most the top five
+rungs (a 4K source should not emit seven renditions nobody requests), and always emit at
+least one rung so there is something to play.
+
+`encoding_tier: "baseline"` collapses this to a single rung for short or cheap content.
+
+<Callout kind="decision" title="Fixed, not content-adaptive">
+A per-asset "smart" ladder sounds better and is much harder to reason about: two similar
+videos get different renditions, and a playback bug becomes unreproducible. A predictable
+ladder is worth more than a marginally better bitrate curve.
+</Callout>
+
+## One pass, not one per rendition
+
+The naive approach runs ffmpeg once per rung, decoding the source N times. Instead a
+single invocation splits the decoded video and encodes every rung from it:
+
+```
+-filter_complex
+  [0:v]split=4[v0][v1][v2][v3];
+  [v0]scale=w=trunc(oh*a/2)*2:h=270,format=yuv420p[vo0];
+  ...
+  [0:a]loudnorm=...,asplit=4[ao0][ao1][ao2][ao3]
+-map [vo0] -c:v:0 libx264 -b:v:0 400k ...
+-var_stream_map "v:0,a:0,name:270p v:1,a:1,name:360p ..."
+```
+
+ffmpeg writes the master playlist itself, which keeps the `CODECS` and `BANDWIDTH`
+attributes honest — hand-written master playlists drift from reality the moment encoder
+settings change.
+
+`scale=w=trunc(oh*a/2)*2` keeps width even at any aspect ratio. H.264 with yuv420p
+requires even dimensions, and an odd width is a hard encoder failure.
+
+## Segment alignment
+
+```
+-g 48 -keyint_min 48 -sc_threshold 0 -r 24
+-hls_time 6 -hls_flags independent_segments
+```
+
+Closed GOPs on a fixed two-second cadence, scene detection off. Every rendition gets
+keyframes at **identical timestamps**, which is what makes mid-stream bitrate switching
+seamless. Without this, a player switching rungs either stalls or shows a visible glitch
+at the switch point.
+
+## The flat layout, and why
+
+Output is a flat directory:
+
+```
+master.m3u8
+270p_playlist.m3u8   270p_init.mp4   270p_segment_00000.m4s
+720p_playlist.m3u8   720p_init.mp4   720p_segment_00000.m4s
+```
+
+Not `270p/playlist.m3u8`. This was arrived at by fixing two bugs that a nested layout
+causes, both of which produce an asset that reports `ready` and does not play.
+
+<Callout kind="warning" title="Bug 1 — orphaned init segments">
+With a nested segment path and `-hls_fmp4_init_filename init.mp4`, ffmpeg writes the init
+segments to the *working directory*, not the variant directories. Each variant playlist
+then references `init_0.mp4`, which does not exist where the player looks. Every segment
+is present; the stream is unplayable.
+</Callout>
+
+<Callout kind="warning" title="Bug 2 — backslashes in playlist URIs">
+ffmpeg emits playlist URIs verbatim from the paths it was given. On Windows that produces
+a backslash separator in the master playlist, which is not a valid HLS URI.
+</Callout>
+
+Running ffmpeg with `cwd` set to the output directory and purely relative, flat filenames
+fixes both at once, on every platform. The storage layout then mirrors the local one
+exactly, so delivery is a single filename lookup.
+
+## Verification before readiness
+
+```python
+for rung in rungs:
+    if not init.exists() or not playlist.exists():
+        raise MediaError(f"rendition {rung.name} is incomplete after transcode")
+    if not any(out_dir.glob(f"{rung.name}_segment_*.m4s")):
+        raise MediaError(f"rendition {rung.name} produced no media segments")
+```
+
+Then, after upload, the master manifest is confirmed present in storage. Only then does
+the asset flip to `ready` and the webhook fire.
+
+An asset that reports `ready` while a rung is missing is worse than one that reports an
+error: the error is actionable, the silent gap is a support ticket from a user whose
+player stalled at a bitrate switch.
+
+## Audio normalisation
+
+EBU R128, two passes. Pass one measures the whole programme:
+
+```
+-af loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json -f null -
+```
+
+Pass two feeds those measurements back in as `measured_I`, `measured_TP`, `measured_LRA`,
+`measured_thresh` and `offset`, with `linear=true`.
+
+One-pass loudnorm cannot hit a target accurately because it has not seen the whole file
+yet — it adapts as it goes, which audibly pumps. If measurement fails, the code degrades
+to single-pass rather than failing the job.
+
+## Derived outputs
+
+**Thumbnails.** `-ss` before `-i` seeks by index rather than decoding to the offset, which
+is what makes arbitrary-timestamp thumbnails cheap enough to generate on request. Results
+are cached under a key hashed from the full render spec, so the same request is free the
+second time. `fit_mode` supports `preserve`, `crop` and `pad`.
+
+**Animated GIFs.** Two-pass palette generation — `palettegen` then `paletteuse`. A single
+pass with the default 216-colour web palette produces visibly banded output. Capped at ten
+seconds.
+
+**Progressive MP4s.** `mp4_support: "standard"` renders low, medium and high.
+`-movflags +faststart` moves the moov atom to the front so the file plays before it
+finishes downloading.
+
+**Storyboards.** A tiled sprite sheet plus the WEBVTT that maps playhead ranges onto tiles.
+
+**Clips.** Re-encoded, never stream-copied. A stream copy can only cut on a keyframe, so a
+copy-based clip silently slides the in-point by up to a GOP — the user asked for 10.0s and
+got 8.4s with no error. Frame accuracy is worth the CPU.
+
+## Failure handling
+
+Errors are classified, not just logged:
+
+| `error_type` | Meaning |
+| --- | --- |
+| `invalid_input` | Undecodable, no video stream, or an unfetchable source. |
+| `transcode_failed` | ffmpeg failed, or output verification failed. |
+
+Both carry messages including the tail of ffmpeg's stderr, which is almost always the
+actual answer. A failed asset emits `video.asset.errored` with the same detail.
+
+## Safety
+
+Every ffmpeg invocation is an argv list passed to `create_subprocess_exec`. Never a shell
+string, never `shell=True`. Filenames, filter graphs and — in the agentic paths —
+model-influenced parameters all flow through here, and a shell would turn any of them into
+an injection surface.

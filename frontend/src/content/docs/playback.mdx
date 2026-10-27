@@ -1,0 +1,194 @@
+---
+title: Playback and delivery
+description: Playback IDs, adaptive manifests, signed tokens, and the audience rule that stops token reuse.
+section: Core concepts
+order: 3
+accent: yellow
+---
+
+import Callout from '@/components/docs/Callout.astro';
+import Mermaid from '@/components/Mermaid.astro';
+import Endpoint from '@/components/docs/Endpoint.astro';
+
+## Playback IDs
+
+An asset has an id. A viewer never sees it. They see a **playback ID** — a separate opaque
+token that maps to the asset and carries its own policy.
+
+```json
+{
+  "id": "Qdh4pmHVMowutTE5",
+  "playback_ids": [
+    { "id": "aB3xK9mR2qLpWn", "policy": "public" },
+    { "id": "7vN4tZ8sYhGfCd", "policy": "signed" }
+  ]
+}
+```
+
+One asset, two URLs, two access policies. Revoking the signed one does not disturb the
+public one, and neither reveals the asset id.
+
+<Callout kind="decision" title="Why the indirection">
+Rotating or revoking access must not require creating a new asset, and the asset id must
+never appear in a URL that ends up in a log, a referrer header, or someone's clipboard.
+Both fall out of this one extra hop.
+</Callout>
+
+<Endpoint method="POST" path="/v1/video/assets/{id}/playback-ids" auth="api-key" />
+<Endpoint method="DELETE" path="/v1/video/assets/{id}/playback-ids/{pid}" auth="api-key" />
+<Endpoint method="GET" path="/v1/video/playback-ids/{id}" auth="public">
+  Resolves a playback ID back to its object.
+</Endpoint>
+
+## Playing a video
+
+<Endpoint method="GET" path="/v1/stream/{playback_id}.m3u8" auth="public" />
+
+```
+#EXTM3U
+#EXT-X-VERSION:7
+#EXT-X-STREAM-INF:BANDWIDTH=491827,RESOLUTION=480x270,CODECS="avc1.640029,mp4a.40.2"
+aB3xK9mR2qLpWn/270p_playlist.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=3090163,RESOLUTION=1280x720,CODECS="avc1.640029,mp4a.40.2"
+aB3xK9mR2qLpWn/720p_playlist.m3u8
+```
+
+Note the variant URIs: the stored manifest has bare filenames, and the API rewrites them
+onto the playback ID as it serves them. When a token is present it is appended too, all
+the way down to segment URIs — otherwise signed playback would work for exactly one
+request and then break one hop in.
+
+<Endpoint method="GET" path="/v1/stream/{playback_id}/{filename}" auth="public">
+  Variant playlists, fMP4 init segments, and media segments.
+</Endpoint>
+
+Filenames are validated against a strict pattern before they reach storage:
+
+```
+^(?:master\.m3u8|[A-Za-z0-9]{2,12}_(?:playlist\.m3u8|init\.mp4|segment_\d{5}\.m4s))$
+```
+
+Anything else is routed to the derived-output handlers or rejected. Path traversal does
+not get a chance to be interesting.
+
+## Caching
+
+| Resource | `Cache-Control` | Why |
+| --- | --- | --- |
+| Master manifest | `public, max-age=60` | Short, so a future variant change propagates. |
+| Variant playlist | `public, max-age=60` | Same. |
+| Init segment | `public, max-age=31536000, immutable` | Content-addressed by name. |
+| Media segment | `public, max-age=31536000, immutable` | Never changes. |
+| Thumbnail / GIF / MP4 | `public, max-age=31536000, immutable` | Keyed by render spec. |
+
+Segment URLs are immutable because the filename encodes the rendition and index, and that
+combination never produces different bytes.
+
+## Signed playback
+
+A playback ID with `policy: "signed"` requires `?token=<JWT>`.
+
+<Mermaid
+  caption="Signed playback. The key id in the token header selects the public key; revoking the key invalidates every token minted from it."
+  chart={`sequenceDiagram
+  autonumber
+  participant V as Viewer
+  participant Y as Your server
+  participant F as Fluxora
+
+  Note over Y: holds the private key
+  V->>Y: request a video
+  Y->>Y: mint JWT (RS256)<br/>sub=playback_id, aud=v, exp
+  Y-->>V: playback URL + token
+  V->>F: GET /v1/stream/{id}.m3u8?token=...
+  F->>F: read kid from header
+  F->>F: look up signing key for this project
+  F->>F: verify signature, aud, sub, exp
+  F-->>V: manifest, URIs carry the token`}
+/>
+
+### Creating a signing key
+
+<Endpoint method="POST" path="/v1/projects/{id}/signing-keys" auth="dashboard" />
+
+```json
+{
+  "data": {
+    "id": "sk_8Kp2mN...",
+    "public_key": "-----BEGIN PUBLIC KEY-----\n...",
+    "private_key": "-----BEGIN PRIVATE KEY-----\n..."
+  }
+}
+```
+
+The private key is returned exactly once. In production you sign tokens on your own server
+with it — the whole point of signed playback is that minting does not require calling us.
+
+### Token claims
+
+| Claim | Meaning |
+| --- | --- |
+| `sub` | The playback ID. Must match the URL. |
+| `aud` | What the token may fetch: `v`, `t`, `g`, `s`. |
+| `exp` | Expiry. Enforced. |
+| `kid` (header) | Which signing key to verify against. |
+
+### The audience rule
+
+`aud` pins a token to one kind of resource:
+
+| `aud` | Unlocks |
+| --- | --- |
+| `v` | Video manifests and segments |
+| `t` | Thumbnails |
+| `g` | Animated GIFs |
+| `s` | Storyboards |
+
+<Callout kind="note" title="Why audiences exist">
+Thumbnail tokens are the ones that leak. They get embedded in pages, passed to image
+CDNs, and pasted into tickets. Without `aud`, any leaked thumbnail token is also a full
+video token. With it, a thumbnail token presented to the manifest endpoint is a 403.
+</Callout>
+
+An audience mismatch returns **403, not 404** — deliberately. A misconfigured client
+should get an actionable error, not a phantom missing asset.
+
+### Revocation
+
+<Endpoint method="DELETE" path="/v1/projects/{id}/signing-keys/{key_id}" auth="dashboard" />
+
+Revoking a key invalidates every token ever minted with it, immediately. There is no
+per-token revocation list; key rotation is the mechanism.
+
+## Derived delivery
+
+<Endpoint method="GET" path="/v1/stream/{playback_id}/thumbnail.jpg" auth="public">
+  `?time=` `&width=` `&height=` `&fit_mode=preserve|crop|pad`
+</Endpoint>
+<Endpoint method="GET" path="/v1/stream/{playback_id}/animated.gif" auth="public">
+  `?start=` `&end=` `&width=` `&fps=` — at most ten seconds.
+</Endpoint>
+<Endpoint method="GET" path="/v1/stream/{playback_id}/storyboard.vtt" auth="public" />
+<Endpoint method="GET" path="/v1/stream/{playback_id}/{rendition}.mp4" auth="public" />
+
+Every parameter is bounded and validated. `width` must be 16–3840; `time` past the end of
+the asset is a 400 with the actual duration in the message, rather than a 500 from ffmpeg
+failing to decode a frame that does not exist.
+
+Thumbnails are cached on a hash of the full render spec, so the second identical request
+is served from storage. The response carries `X-Fluxora-Cache: hit` or `miss`.
+
+## Deleted assets stop immediately
+
+Deleting an asset flips its status to `deleted` and queues storage reclamation
+separately. Playback returns 404 at once — it does not wait for objects to be purged.
+Stopping access is urgent; reclaiming bytes is not.
+
+## Proxied delivery, and its cost
+
+Every byte passes through the API. That is what makes one enforcement point for playback
+policy, token audience and analytics possible at all.
+
+The cost is that delivery traffic lands on your compute. In production, put a CDN in front
+of `/v1/stream/*` keyed on the full signed URL. The cache headers above are set up for
+exactly that: segments cache for a year at the edge, manifests re-validate every minute.

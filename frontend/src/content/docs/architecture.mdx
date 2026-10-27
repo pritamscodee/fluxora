@@ -1,0 +1,224 @@
+---
+title: Architecture
+description: The shape of the system, the decisions behind it, and what each one costs.
+section: Overview
+order: 2
+accent: cyan
+---
+
+import Callout from '@/components/docs/Callout.astro';
+import Mermaid from '@/components/Mermaid.astro';
+
+Video processing is minutes-long and CPU-bound. Everything structural about Fluxora
+follows from refusing to let that block an HTTP request.
+
+## Processes
+
+<Mermaid
+  caption="Four processes, three stores. Any process can be restarted without losing work."
+  chart={`flowchart LR
+  subgraph procs["Processes"]
+    direction TB
+    API["FastAPI<br/><small>routes, delivery</small>"]
+    MW["Media worker<br/><small>ffmpeg</small>"]
+    AW["Agent tool worker<br/><small>BullMQ consumer</small>"]
+    FE["Astro docs"]
+  end
+
+  subgraph stores["State"]
+    direction TB
+    PG[("Postgres<br/><small>rows + job queue</small>")]
+    OS[("Object storage<br/><small>source, HLS, MP4</small>")]
+    RD[("Redis<br/><small>agent tasks</small>")]
+  end
+
+  API --> PG
+  API --> OS
+  API --> RD
+  MW --> PG
+  MW --> OS
+  AW --> RD
+  AW --> PG`}
+/>
+
+## Decision 1 — Separate the API from the worker
+
+The API handles only fast I/O. Every ffmpeg invocation runs in a worker polling a job
+table. A request that creates an asset returns in milliseconds with `status: "preparing"`;
+the caller learns it is ready from a webhook or by polling.
+
+## Decision 2 — Postgres is the queue
+
+Not Redis, not Celery — for the *media* pipeline.
+
+`SELECT … FOR UPDATE SKIP LOCKED` gives atomic claim semantics with no extra
+infrastructure, and the job row doubles as the audit trail: what ran, when, how many
+attempts, what the error was. Postgres is already a hard dependency; Redis at the time was
+not.
+
+```sql
+WITH claimed AS (
+    SELECT id FROM jobs
+     WHERE (status = 'queued' AND (run_after IS NULL OR run_after <= :now))
+        OR (status = 'running'
+            AND locked_at < :now - make_interval(secs => lease_seconds))
+       AND attempts < max_attempts
+     ORDER BY priority ASC, created_at ASC
+     FOR UPDATE SKIP LOCKED
+     LIMIT 1
+)
+UPDATE jobs SET status = 'running', locked_at = :now, attempts = attempts + 1 ...
+```
+
+The second branch of that `WHERE` is the interesting one: a job whose lease has expired is
+reclaimable. That is how work survives a worker being killed mid-ffmpeg.
+
+<Callout kind="note">
+SQLite has no `SKIP LOCKED`, so the development path falls back to a guarded
+compare-and-set update. Correctness is identical; only contention behaviour differs.
+</Callout>
+
+Redis arrived later for a different job — agent tool dispatch, where BullMQ's retry and
+dead-letter semantics are the point. See [Task queue](/docs/task-queue).
+
+## Decision 3 — Jobs are idempotent and keyed
+
+Every job carries an `idempotency_key`, unique in the table. Enqueueing a duplicate is a
+no-op rather than an error, because the callers that enqueue — an API retry, a reclaimed
+parent job, a redelivered webhook — can legitimately run twice.
+
+Handlers are written so a retry converges:
+
+- Output goes to a **deterministic storage key** derived from the asset id, so a retry
+  overwrites a partial result instead of creating `output-2.mp4`.
+- Work is **re-derived, not resumed**. There is no half-finished state to reason about.
+- Readiness is **verified**, not assumed: before an asset flips to `ready`, every expected
+  object is confirmed present in storage.
+
+<Mermaid
+  caption="Job lifecycle. The lease expiry path is what makes a killed worker a non-event."
+  chart={`stateDiagram-v2
+  [*] --> queued
+  queued --> running: claimed
+  running --> succeeded: handler returns
+  running --> queued: handler raised<br/>(backoff 30s→32m)
+  running --> queued: lease expired<br/>(worker died)
+  running --> failed: attempts exhausted
+  failed --> [*]
+  succeeded --> [*]`}
+/>
+
+## Decision 4 — Object storage is private, delivery is proxied
+
+Buckets are never public. Every byte a viewer receives passes through the API, which is
+what makes a single chokepoint for playback policy, signed-token audience checks and
+analytics possible at all.
+
+The cost is real: delivery traffic flows through our compute, so egress and horizontal
+scale land on the API tier. The mitigation is a CDN in front of `/v1/stream/*` keyed on
+the signed URL. Segment URLs are content-addressed and immutable, so they carry a one-year
+`Cache-Control`; manifests carry sixty seconds.
+
+## Decision 5 — Playback IDs are indirection on purpose
+
+An asset has an id. A viewer never sees it. They see a **playback ID**, a separate opaque
+token that maps to the asset and carries its own policy.
+
+This means access can be rotated or revoked without touching the asset, one asset can
+expose both a public and a signed URL simultaneously, and the asset id never leaks into a
+URL that ends up in a log or a referrer header.
+
+## Decision 6 — Two disjoint auth systems
+
+| | Dashboard | Video API |
+| --- | --- | --- |
+| Credential | JWT bearer | HTTP Basic API key |
+| Audience | Humans in a browser | Machines |
+| Scope | A user's projects | Exactly one project |
+| Routes | `/v1/auth`, `/v1/projects` | `/v1/video/*` |
+
+They are not interchangeable, and that is enforced and tested. A leaked dashboard token
+cannot drive the ingest API; an API key cannot read account settings. Because an API key
+resolves to exactly one project, no `/v1/video/*` endpoint takes a project id — which
+removes a whole class of cross-tenant bug by construction.
+
+## Decision 7 — The agent proposes, the backend decides
+
+LangGraph plans. Claude or GPT writes a tool name and a JSON object — never code, never a
+shell command. Every tool is an explicitly registered Python function with a Pydantic
+argument schema, and ffmpeg is always invoked as an argv list.
+
+Expensive and destructive tools are gated behind human approval. The gate is a node in the
+graph and a status in the database, not a line in a prompt, so a model that ignores its
+instructions still cannot act.
+
+<Callout kind="decision" title="Why approval is structural">
+Prompt instructions are advisory. If the only thing stopping a destructive action is text
+the model was asked to respect, then the control is the model's compliance, which is not a
+control. Here the executor refuses to run a high-risk step unless an `approved` row exists.
+</Callout>
+
+## Data model
+
+<Mermaid
+  caption="The core entities. Everything else — jobs, events, usage, agent runs — hangs off a project."
+  chart={`erDiagram
+  USER ||--o{ PROJECT : owns
+  PROJECT ||--o{ API_KEY : has
+  PROJECT ||--o{ ASSET : contains
+  PROJECT ||--o{ DIRECT_UPLOAD : has
+  PROJECT ||--o{ WEBHOOK_ENDPOINT : has
+  PROJECT ||--o{ EVENT : logs
+  PROJECT ||--o{ SIGNING_KEY : has
+  PROJECT ||--o{ AGENT_RUN : has
+  ASSET ||--o{ PLAYBACK_ID : "exposed by"
+  ASSET ||--o{ ASSET_TRACK : has
+  ASSET ||--o{ STATIC_RENDITION : has
+  DIRECT_UPLOAD ||--o| ASSET : becomes
+  EVENT ||--o{ WEBHOOK_DELIVERY : "delivered as"`}
+/>
+
+Twenty tables in total. Public identifiers are opaque base58 strings rather than
+sequences, so an id reveals nothing about volume or ordering and cannot be enumerated.
+
+## Request paths
+
+<Mermaid
+  caption="Upload and playback, as sequences. Note that bytes go straight to storage, and that readiness is verified before the event fires."
+  chart={`sequenceDiagram
+  autonumber
+  participant C as Client
+  participant A as API
+  participant S as Storage
+  participant Q as jobs
+  participant W as Worker
+
+  C->>A: POST /v1/video/uploads
+  A->>S: presign PUT
+  A-->>C: {id, url, status: waiting}
+  C->>S: PUT bytes
+  C->>A: GET /v1/video/uploads/{id}
+  A->>S: head object
+  S-->>A: exists
+  A->>Q: enqueue transcode
+  A-->>C: {status: asset_created, asset_id}
+  W->>Q: claim
+  W->>S: download source
+  W->>W: ffprobe, ABR ladder, HLS
+  W->>S: upload renditions
+  W->>S: verify every object
+  W->>A: asset ready + event
+  A-->>C: signed webhook`}
+/>
+
+## Consequences, stated plainly
+
+- Postgres-as-queue couples worker throughput to database connections; the worker holds
+  one per concurrency slot. Revisit beyond roughly 100 jobs/second.
+- Proxied delivery puts egress on the API tier. A CDN is not optional at scale.
+- No just-in-time encoding means time-to-first-play is the full ladder render.
+- The development object store is not the production one. Mitigated by running the entire
+  test suite unchanged against both.
+
+Full decision records: [ADR-0001](/docs/adr-0001-architecture) and
+[ADR-0002](/docs/adr-0002-object-storage).

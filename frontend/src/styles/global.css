@@ -1,0 +1,329 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+@import "@fontsource/archivo-black";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ============================================================================
+   Fluxora docs — neobrutalism
+   ----------------------------------------------------------------------------
+   The rules the whole site follows:
+     1. Every surface has a hard black border. No soft greys standing in for
+        structure.
+     2. Shadows are solid offsets, never blurred. Depth is drawn, not simulated.
+     3. Colour is flat and loud, used to label meaning (endpoint verbs, risk
+        levels, callout kinds) rather than for decoration.
+     4. Interaction is physical: an element presses into its own shadow.
+     5. Radii stay near zero. Chunky beats soft.
+   ========================================================================= */
+
+@theme inline {
+    --font-heading: 'Archivo Black', 'Geist Variable', sans-serif;
+    --font-sans: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
+    --font-mono: 'Geist Mono Variable', ui-monospace, 'SFMono-Regular', monospace;
+
+    --color-ring: var(--ring);
+    --color-input: var(--input);
+    --color-border: var(--border);
+    --color-destructive: var(--destructive);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+
+    /* Flat signal palette. Each colour means something specific. */
+    --color-brutal-yellow: var(--brutal-yellow);
+    --color-brutal-lime: var(--brutal-lime);
+    --color-brutal-cyan: var(--brutal-cyan);
+    --color-brutal-pink: var(--brutal-pink);
+    --color-brutal-orange: var(--brutal-orange);
+    --color-brutal-violet: var(--brutal-violet);
+    --color-brutal-red: var(--brutal-red);
+    --color-brutal-ink: var(--brutal-ink);
+
+    --radius-sm: 0px;
+    --radius-md: 2px;
+    --radius-lg: 4px;
+    --radius-xl: 6px;
+}
+
+:root {
+    --radius: 4px;
+
+    /* Warm paper, so the black borders read as ink rather than UI chrome. */
+    --background: #fdf6e3;
+    --foreground: #0b0b0b;
+    --card: #ffffff;
+    --card-foreground: #0b0b0b;
+    --popover: #ffffff;
+    --popover-foreground: #0b0b0b;
+    --primary: #0b0b0b;
+    --primary-foreground: #fdf6e3;
+    --secondary: #ffd803;
+    --secondary-foreground: #0b0b0b;
+    --muted: #f0e7cd;
+    --muted-foreground: #4a4536;
+    --accent: #7cf5c0;
+    --accent-foreground: #0b0b0b;
+    --destructive: #ff5b5b;
+    --border: #0b0b0b;
+    --input: #0b0b0b;
+    --ring: #0b0b0b;
+
+    --brutal-yellow: #ffd803;
+    --brutal-lime: #b8f84a;
+    --brutal-cyan: #6ee7f9;
+    --brutal-pink: #ff8fd8;
+    --brutal-orange: #ff9f45;
+    --brutal-violet: #c4a8ff;
+    --brutal-red: #ff5b5b;
+    --brutal-ink: #0b0b0b;
+
+    --shadow-brutal: 4px 4px 0 0 var(--brutal-ink);
+    --shadow-brutal-lg: 7px 7px 0 0 var(--brutal-ink);
+    --shadow-brutal-sm: 2px 2px 0 0 var(--brutal-ink);
+}
+
+.dark {
+    /* Same system inverted: the ink becomes the paper and borders go white. */
+    --background: #14131a;
+    --foreground: #f7f4ea;
+    --card: #1d1b26;
+    --card-foreground: #f7f4ea;
+    --popover: #1d1b26;
+    --popover-foreground: #f7f4ea;
+    --primary: #ffd803;
+    --primary-foreground: #0b0b0b;
+    --secondary: #2b2838;
+    --secondary-foreground: #f7f4ea;
+    --muted: #262334;
+    --muted-foreground: #b4aec6;
+    --accent: #7cf5c0;
+    --accent-foreground: #0b0b0b;
+    --destructive: #ff6b6b;
+    --border: #f7f4ea;
+    --input: #f7f4ea;
+    --ring: #ffd803;
+
+    --brutal-ink: #f7f4ea;
+    --shadow-brutal: 4px 4px 0 0 var(--brutal-ink);
+    --shadow-brutal-lg: 7px 7px 0 0 var(--brutal-ink);
+    --shadow-brutal-sm: 2px 2px 0 0 var(--brutal-ink);
+}
+
+@layer base {
+    * {
+        @apply border-border;
+    }
+
+    body {
+        @apply bg-background text-foreground font-sans;
+        /* Faint grid, so flat colour blocks have something to sit on. */
+        background-image:
+            linear-gradient(to right, color-mix(in srgb, var(--foreground) 6%, transparent) 1px, transparent 1px),
+            linear-gradient(to bottom, color-mix(in srgb, var(--foreground) 6%, transparent) 1px, transparent 1px);
+        background-size: 28px 28px;
+    }
+
+    h1, h2, h3, h4 {
+        @apply font-[family-name:var(--font-heading)] tracking-tight;
+    }
+
+    :focus-visible {
+        outline: 3px solid var(--brutal-ink);
+        outline-offset: 3px;
+    }
+
+    ::selection {
+        background: var(--brutal-yellow);
+        color: #0b0b0b;
+    }
+}
+
+@layer components {
+    /* The core primitive: bordered block with a solid offset shadow. */
+    .brutal {
+        @apply border-[3px] border-[var(--brutal-ink)];
+        box-shadow: var(--shadow-brutal);
+    }
+
+    .brutal-lg {
+        @apply border-[3px] border-[var(--brutal-ink)];
+        box-shadow: var(--shadow-brutal-lg);
+    }
+
+    .brutal-sm {
+        @apply border-2 border-[var(--brutal-ink)];
+        box-shadow: var(--shadow-brutal-sm);
+    }
+
+    /* Press: the element moves into the space its shadow occupied. */
+    .brutal-press {
+        transition: transform 120ms ease, box-shadow 120ms ease;
+    }
+
+    .brutal-press:hover {
+        transform: translate(2px, 2px);
+        box-shadow: var(--shadow-brutal-sm);
+    }
+
+    .brutal-press:active {
+        transform: translate(4px, 4px);
+        box-shadow: 0 0 0 0 var(--brutal-ink);
+    }
+
+    .brutal-tag {
+        @apply inline-flex items-center gap-1.5 border-2 border-[var(--brutal-ink)]
+               px-2 py-0.5 text-xs font-bold uppercase tracking-wide;
+        box-shadow: var(--shadow-brutal-sm);
+    }
+
+    /* HTTP verbs get fixed colours so they are recognisable at a glance. */
+    .verb-get    { background: var(--brutal-cyan); }
+    .verb-post   { background: var(--brutal-lime); }
+    .verb-put    { background: var(--brutal-orange); }
+    .verb-patch  { background: var(--brutal-violet); }
+    .verb-delete { background: var(--brutal-red); }
+}
+
+/* ---- Long-form documentation body ---- */
+
+.docs-prose {
+    @apply max-w-none text-[15px] leading-7;
+}
+
+.docs-prose > * + * {
+    @apply mt-5;
+}
+
+.docs-prose h2 {
+    @apply mt-12 mb-4 text-2xl uppercase;
+    border-bottom: 4px solid var(--brutal-ink);
+    padding-bottom: 0.4rem;
+    scroll-margin-top: 6rem;
+}
+
+.docs-prose h3 {
+    @apply mt-9 mb-3 text-lg font-extrabold uppercase tracking-wide;
+    scroll-margin-top: 6rem;
+}
+
+.docs-prose h4 {
+    @apply mt-6 mb-2 text-base font-bold;
+    scroll-margin-top: 6rem;
+}
+
+.docs-prose p { @apply text-foreground/90; }
+
+.docs-prose a {
+    @apply font-semibold underline decoration-[3px] underline-offset-[3px];
+    text-decoration-color: var(--brutal-pink);
+}
+
+.docs-prose a:hover {
+    background: var(--brutal-yellow);
+    color: #0b0b0b;
+}
+
+.docs-prose ul { @apply list-none space-y-2 pl-0; }
+
+.docs-prose ul > li {
+    @apply relative pl-6;
+}
+
+.docs-prose ul > li::before {
+    content: "";
+    @apply absolute left-0 top-[0.6em] size-2.5 border-2 border-[var(--brutal-ink)];
+    background: var(--brutal-yellow);
+}
+
+.docs-prose ol { @apply list-decimal space-y-2 pl-6 marker:font-bold; }
+
+.docs-prose :not(pre) > code {
+    @apply border-2 border-[var(--brutal-ink)] px-1.5 py-0.5 text-[0.85em] font-semibold;
+    background: var(--brutal-cyan);
+    color: #0b0b0b;
+}
+
+.docs-prose pre {
+    @apply overflow-x-auto border-[3px] border-[var(--brutal-ink)] p-4 text-[13px] leading-6;
+    box-shadow: var(--shadow-brutal);
+    background: #0b0b0b !important;
+}
+
+.docs-prose pre > code {
+    @apply border-0 bg-transparent p-0 text-inherit;
+}
+
+.docs-prose blockquote {
+    @apply border-[3px] border-l-[10px] border-[var(--brutal-ink)] px-4 py-3 font-medium;
+    background: var(--brutal-violet);
+    color: #0b0b0b;
+    box-shadow: var(--shadow-brutal);
+}
+
+.docs-prose table {
+    @apply w-full border-collapse border-[3px] border-[var(--brutal-ink)] text-sm;
+    box-shadow: var(--shadow-brutal);
+    background: var(--card);
+}
+
+.docs-prose thead {
+    background: var(--brutal-yellow);
+    color: #0b0b0b;
+}
+
+.docs-prose th {
+    @apply border-2 border-[var(--brutal-ink)] px-3 py-2 text-left text-xs font-extrabold uppercase tracking-wide;
+}
+
+.docs-prose td {
+    @apply border-2 border-[var(--brutal-ink)] px-3 py-2 align-top;
+}
+
+.docs-prose hr {
+    @apply my-10 border-0;
+    border-top: 4px dashed var(--brutal-ink);
+}
+
+.docs-prose img,
+.docs-prose svg.mermaid-rendered {
+    @apply border-[3px] border-[var(--brutal-ink)];
+    box-shadow: var(--shadow-brutal);
+}
+
+/* Table wrapper so wide tables scroll instead of blowing out the layout. */
+.docs-prose .table-scroll {
+    @apply overflow-x-auto;
+}
+
+/* ---- Scrollbars ---- */
+
+.brutal-scroll::-webkit-scrollbar { width: 12px; height: 12px; }
+.brutal-scroll::-webkit-scrollbar-track { background: var(--muted); }
+.brutal-scroll::-webkit-scrollbar-thumb {
+    background: var(--brutal-ink);
+    border: 2px solid var(--muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .brutal-press,
+    .brutal-press:hover,
+    .brutal-press:active {
+        transition: none;
+        transform: none;
+    }
+}

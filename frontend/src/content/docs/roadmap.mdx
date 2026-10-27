@@ -1,0 +1,122 @@
+---
+title: Roadmap
+description: What is done, what is partially built, and what comes next — with the honest state of each.
+section: Project
+order: 3
+accent: orange
+---
+
+import Callout from '@/components/docs/Callout.astro';
+import Mermaid from '@/components/Mermaid.astro';
+
+<Mermaid
+  caption="Phases 1–4 and 6 are complete and tested. Phase 5 is partially built: the schema and API shape exist, the implementations do not."
+  chart={`flowchart LR
+  P1["1 · Research<br/><small>done</small>"] --> P2["2 · Auth, projects,<br/>API keys<br/><small>done</small>"]
+  P2 --> P3["3 · Upload → playback<br/><small>done</small>"]
+  P3 --> P4["4 · HLS, webhooks,<br/>asset management<br/><small>done</small>"]
+  P4 --> P5["5 · Analytics, metering,<br/>live<br/><small>partial</small>"]
+  P5 --> P6["6 · Agentic automation<br/><small>done</small>"]
+  P6 --> P7["7 · Failure, security,<br/>scale<br/><small>ongoing</small>"]`}
+/>
+
+## Done
+
+**Phase 1 — Research.** [Feature matrix](/docs/feature-matrix) and API contracts derived
+from public documentation.
+
+**Phase 2 — Platform.** Registration, rotating refresh tokens with reuse detection,
+projects, environments, Argon2id-hashed API keys.
+
+**Phase 3 — Upload to playback.** Presigned direct uploads, pull ingest, reconciliation,
+ffprobe, the single-pass ABR ladder, fMP4 HLS. Verified end to end against a live stack.
+
+**Phase 4 — Delivery and events.** Playback IDs, signed playback with audience
+enforcement, thumbnails, GIFs, storyboards, MP4 renditions, clipping, text tracks, the
+event log, and signed webhooks with retries and replay.
+
+**Phase 6 — Agentic automation.** LangGraph planning, a typed tool registry, two-layer
+guardrails, human-in-the-loop approval, BullMQ dispatch with five retries and a
+dead-letter queue, LangSmith tracing.
+
+**Usage metering.** Daily rollups of encoding minutes and storage GB-hours.
+
+## Partially built
+
+Honest about where these stand.
+
+### Live streaming
+
+**What exists:** the `live_streams` table, stream-key generation, status model
+(`idle`/`active`/`disabled`), `new_asset_settings`, reconnect windows, playback IDs that
+can point at a live stream, and the reserved `video.live_stream.*` event family.
+
+**What does not:** RTMP ingest itself. There is no listener, no live HLS packaging, and no
+instant live-to-VOD.
+
+**What it needs:** an RTMP server (nginx-rtmp or a Go ingest service) that authenticates
+on the stream key, calls back on connect and disconnect, and hands segments to a packager
+writing a rolling live playlist. On disconnect, the recording becomes an ordinary asset.
+
+### Playback analytics
+
+**What exists:** the `video_views` table and a bounded, validated `BeaconEvent` schema
+covering watch time, playing time, startup time, rebuffering and completion.
+
+**What does not:** the ingest endpoint, session aggregation, and the metrics API.
+
+**What it needs:** a `POST /v1/data/beacon` endpoint (unauthenticated — the playback ID is
+the capability), session rollups, and `/v1/data/metrics/{metric}` for views, unique
+viewers, playing time and startup time.
+
+### Playback restrictions
+
+The `playback_restrictions` table exists. Referrer and user-agent checks are not wired
+into the delivery path.
+
+## Next
+
+**Agent streaming.** `GET /agent/runs/{id}/events` as SSE, so a dashboard can watch a plan
+execute step by step rather than polling.
+
+**Multi-step agent loops.** The planner currently produces one plan up front. A
+plan-act-observe loop would let it adapt to what a tool actually returned.
+
+**Watermarking.** An ffmpeg `overlay` pass; the pipeline shape already supports it.
+
+**Webhook endpoint health.** Automatically disable an endpoint that has exhausted many
+consecutive deliveries, and surface that in the dashboard.
+
+**A real dashboard.** This site is documentation. An asset library, player preview,
+webhook debugger and agent console are a separate application.
+
+## Considered and rejected
+
+| Idea | Why not |
+| --- | --- |
+| DRM | Requires device-vendor licensing relationships. Signed URLs are the honest ceiling. |
+| Low-latency HLS | A different packaging and delivery path for a narrow set of use cases. |
+| Multi-CDN | An operations discipline, not a feature. One origin plus correct cache headers first. |
+| Just-in-time encoding | Would roughly double delivery complexity to improve time-to-first-play. |
+| Replacing Postgres-as-queue | Not until throughput demands it; the audit trail is worth a lot. |
+
+## Known limitations
+
+<Callout kind="warning">
+- **Delivery is proxied**, so egress lands on the API tier. A CDN is not optional at scale.
+- **Postgres-as-queue** couples worker throughput to database connections.
+- **No just-in-time encoding**: time-to-first-play is the full ladder render.
+- **The development object store is not the production one.** Mitigated by running the
+  whole suite unchanged against both.
+- **Agent plans are single-shot.** A plan that needed to adapt mid-flight stops at the
+  first failure instead.
+</Callout>
+
+## Phase 7 — ongoing
+
+Failure recovery, security and scale are not a phase that finishes. Current state:
+
+- Worker death mid-transcode is covered by lease expiry and idempotent handlers.
+- Tenant isolation, token audiences, key revocation and enumeration resistance are tested.
+- Load testing has not been done. The 100 jobs/second figure for the queue is an estimate,
+  not a measurement — it should be measured before anyone relies on it.
